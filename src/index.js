@@ -5,7 +5,17 @@ dotenv.config({
     path: "./.env"
 });
 
-connectToDatabase();
+connectToDatabase()
+.then(() => {
+    app.listen(process.env.port || 8000, () => {
+        console.log(` server is running at port : ${process.env.PORT}`)
+    })
+})
+.catch((error) => {
+    console.log("mongo db connection failed !!!" , error)
+})
+
+
 
 
 
