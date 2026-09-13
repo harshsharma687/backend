@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 const userSchema = new mongoose.Schema(
   {
     username: {
-      type: string,
+      type: String,
       required: true,
       unique: true,
       lowercase: true,
@@ -13,24 +13,24 @@ const userSchema = new mongoose.Schema(
       index: true, //serchable
     },
     email: {
-      type: string,
+      type: String,
       required: true,
       unique: true,
       lowercase: true,
       trim: true,
     },
     fullname: {
-      type: string,
+      type: String,
       required: true,
       trim: true,
       index: true,
     },
     avatar: {
-      type: string, //cloudinary url
+      type: String, //cloudinary url
       required: true,
     },
     coverImage: {
-      type: string,
+      type: String,
     },
     watchHIstory: [
       {
@@ -39,11 +39,11 @@ const userSchema = new mongoose.Schema(
       },
     ],
     password: {
-      type: string,
+      type: String,
       required: [true, "password is required"],
     },
     refreshToken: {
-      type: string,
+      type: String,
     },
   },
   {
@@ -51,11 +51,10 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
 
   this.password = await bcrypt.hash(this.password, 10);
-  next();
 });
 
 userSchema.methods.isPasswordCorrect = async function (password) {

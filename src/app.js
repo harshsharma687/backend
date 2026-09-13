@@ -1,6 +1,7 @@
 import express from "express"
 import cors from "cors"
 import cookieparser from "cookie-parser"
+import multer from "multer"
 
 const app = express()
 
@@ -21,5 +22,23 @@ import userRouter from "./routes/user.routes.js"
 
 // routes declaration
 app.use("/api/v1/users", userRouter)  //prefix
+
+app.use((error, req, res, next) => {
+    if (error instanceof multer.MulterError && error.code === "LIMIT_UNEXPECTED_FILE") {
+        return res.status(400).json({
+            success: false,
+            message: `Invalid file field "${error.field}". Use "avatar" or "coverImage".`,
+            errors: [],
+        })
+    }
+
+    const statusCode = error.statusCode || error.statuscode || 500
+
+    res.status(statusCode).json({
+        success: false,
+        message: error.message || "Internal server error",
+        errors: error.errors || [],
+    })
+})
 
 export {app} 
