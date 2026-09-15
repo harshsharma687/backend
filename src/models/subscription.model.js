@@ -8,7 +8,7 @@ const subscriptionSchema = new Schema(
     },
     channel: {
       type: Schema.Types.ObjectId,
-      ref: "User",
+      ref: "User", 
     },
   },
   { timestamps: true }
