@@ -186,7 +186,10 @@ function renderVideoGrid(videos, target = main) {
   const grid = $(".video-grid", target);
   if (!grid) return;
   if (!videos.length) {
-    grid.outerHTML = `<div class="empty-state"><span class="empty-icon">⌕</span><h2>Nothing matched that search</h2><p>Try a different keyword, or reset the filters to explore the whole community.</p><button class="outline-button" type="button" data-action="reset-search">Show all videos</button></div>`;
+    const newFeed = location.hash === "#home" && state.activeCategory === "All" && !state.usingDemoData;
+    grid.outerHTML = newFeed
+      ? `<div class="empty-state"><span class="empty-icon">▶</span><h2>No videos here yet</h2><p>Be the first creator to share something with this community.</p><button class="primary-button" type="button" data-action="open-upload">Upload a video</button></div>`
+      : `<div class="empty-state"><span class="empty-icon">⌕</span><h2>Nothing matched that search</h2><p>Try a different keyword, or reset the filters to explore the whole community.</p><button class="outline-button" type="button" data-action="reset-search">Show all videos</button></div>`;
     return;
   }
   const fragment = document.createDocumentFragment();

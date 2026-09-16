@@ -214,11 +214,11 @@ img { display: block; max-width: 100%; }
 .modal-panel { position: relative; }
 .modal-close { position: absolute; top: 12px; right: 12px; z-index: 2; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: var(--surface-raised); color: var(--text); font-size: 24px; line-height: 1; }
 .modal-close:hover { background: var(--surface-hover); }
-.auth-panel { display: grid; grid-template-columns: 38% 62%; min-height: 530px; }
+.auth-panel { display: grid; grid-template-columns: 38% 62%; height: min(650px, calc(100vh - 26px)); min-height: 0; }
 .auth-art { display: flex; flex-direction: column; justify-content: flex-end; padding: 33px; background: linear-gradient(150deg, #342a77, #b8354c 55%, #e96a40); color: white; }
 .auth-art h2 { max-width: 220px; margin: 16px 0 7px; font-family: "Manrope", sans-serif; font-size: 29px; line-height: 1.08; letter-spacing: -1.4px; }
 .auth-art p { margin: 0; color: rgb(255 255 255 / .79); line-height: 1.5; font-size: 13px; }
-.auth-content { padding: 42px 42px 32px; overflow-y: auto; }
+.auth-content { min-height: 0; padding: 42px 42px 32px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .auth-tabs { display: flex; gap: 19px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .auth-tab { position: relative; padding: 0 1px 10px; border: 0; background: none; color: var(--muted); font-size: 13px; font-weight: 700; }
 .auth-tab.active { color: var(--text); }
