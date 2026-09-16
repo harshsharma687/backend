@@ -1,4 +1,5 @@
-const API = "/api/v1";
+const API_HOST = window.location.port === "8000" ? window.location.origin : "http://localhost:8000";
+const API = `${API_HOST}/api/v1`;
 const main = document.querySelector("#app-main");
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -152,9 +153,9 @@ async function loadMiniSubscriptions() {
 }
 
 function setAuthTab(tab) {
-  $$("[data-auth-tab]").forEach((button) => button.classList.toggle("active", button.dataset.authTab === tab));
-  $("#login-form").hidden = tab !== "login";
-  $("#register-form").hidden = tab !== "register";
+  setModal("auth-modal", false);
+  setModal("register-modal", false);
+  setModal(tab === "register" ? "register-modal" : "auth-modal", true);
 }
 
 function createVideoCard(video) {
@@ -183,7 +184,7 @@ function createVideoCard(video) {
 }
 
 function renderVideoGrid(videos, target = main) {
-  const grid = $(".video-grid", target);
+  const grid = target.matches?.(".video-grid") ? target : $(".video-grid", target);
   if (!grid) return;
   if (!videos.length) {
     const newFeed = location.hash === "#home" && state.activeCategory === "All" && !state.usingDemoData;
@@ -324,7 +325,10 @@ async function getVideosForOwner(ownerId) {
   try {
     const data = await request(`/videos?${new URLSearchParams({ userId: ownerId, limit: "36" })}`);
     return (data.videos || data.docs || data || []).map(normaliseVideo);
-  } catch { return demoVideos.filter((video) => String(video.owner._id) === String(ownerId)); }
+  } catch (error) {
+    if (isDemo(ownerId)) return demoVideos.filter((video) => String(video.owner._id) === String(ownerId));
+    throw error;
+  }
 }
 
 function libraryEmpty(title, description, action = "open-login", label = "Sign in") {
@@ -373,10 +377,21 @@ async function renderLibrary() {
   const renderId = ++state.renderId;
   setLoading("Loading your library…");
   try {
-    const [playlists, history] = await Promise.all([request("/playlists"), request("/users/history")]);
+    const [playlists, history, uploads] = await Promise.all([
+      request("/playlists"),
+      request("/users/history"),
+      getVideosForOwner(state.user._id),
+    ]);
     if (renderId !== state.renderId) return;
-    main.innerHTML = `<section class="page-head"><div><h1>Your library</h1><p>A home for everything you want to watch and make.</p></div><button class="primary-button" type="button" data-action="open-upload">＋ Upload</button></section><section class="library-summary"><article class="stat-card"><b>${history.length}</b><span>Videos watched</span></article><article class="stat-card"><b>${playlists.length}</b><span>Playlists</span></article><article class="stat-card"><b>${state.user.username ? "@" + escapeHTML(state.user.username) : "You"}</b><span>Your channel</span></article></section><section class="section-heading"><h2>Your playlists</h2><button class="text-button" type="button" data-action="go-playlists">View all</button></section><div class="playlist-grid">${playlists.slice(0, 3).map((playlist) => `<article class="playlist-card"><div class="playlist-cover"><span class="playlist-count">${playlist.video?.length || 0} videos</span></div><div class="playlist-card-body"><h3>${escapeHTML(playlist.name)}</h3><p>${escapeHTML(playlist.description)}</p></div></article>`).join("") || `<div class="empty-state" style="min-height:auto"><p>Start collecting videos that matter to you.</p><button class="outline-button" type="button" data-action="open-playlist">New playlist</button></div>`}</div><section class="section-heading"><h2>Watch again</h2><button class="text-button" type="button" data-action="go-history">View history</button></section><div class="video-grid"></div>`;
-    renderVideoGrid(history.slice(0, 4));
+      main.innerHTML = `<section class="page-head"><div><h1>Your library</h1><p>A home for everything you want to watch and make.</p></div><div class="page-actions"><button class="outline-button" type="button" data-action="open-channel">Create channel</button><button class="primary-button" type="button" data-action="open-upload">＋ Upload</button></div></section><section class="library-summary"><article class="stat-card"><b>${history.length}</b><span>Videos watched</span></article><article class="stat-card"><b>${playlists.length}</b><span>Playlists</span></article><article class="stat-card"><b>${state.user.username ? "@" + escapeHTML(state.user.username) : "You"}</b><span>Your channel</span></article></section><section class="section-heading"><h2>Your playlists</h2><button class="text-button" type="button" data-action="go-playlists">View all</button></section><div class="playlist-grid">${playlists.slice(0, 3).map((playlist) => `<article class="playlist-card"><div class="playlist-cover"><span class="playlist-count">${playlist.video?.length || 0} videos</span></div><div class="playlist-card-body"><h3>${escapeHTML(playlist.name)}</h3><p>${escapeHTML(playlist.description)}</p></div></article>`).join("") || `<div class="empty-state" style="min-height:auto"><p>Start collecting videos that matter to you.</p><button class="outline-button" type="button" data-action="open-playlist">New playlist</button></div>`}</div><section class="section-heading"><h2>Watch history</h2><button class="text-button" type="button" data-action="go-history">View history</button></section><div class="video-grid" id="history-grid"></div>`;
+      renderVideoGrid(history.slice(0, 4), $("#history-grid"));
+    const uploadsHeading = document.createElement("section");
+    uploadsHeading.className = "section-heading library-uploads-heading";
+    uploadsHeading.innerHTML = `<h2>Your uploads</h2><a class="text-button" href="#channel/${encodeURIComponent(state.user.username)}">View channel</a>`;
+    const uploadsGrid = document.createElement("div");
+    uploadsGrid.className = "video-grid";
+    main.append(uploadsHeading, uploadsGrid);
+    renderVideoGrid(uploads, uploadsGrid);
   } catch (error) { libraryEmpty("Your library", error.message, "home", "Explore videos"); }
 }
 
@@ -405,24 +420,37 @@ function goto(hash) { location.hash = hash; }
 
 async function handleLogin(form) {
   const formData = new FormData(form);
-  const identity = formData.get("identity").trim();
-  const body = { password: formData.get("password") };
+  const identity = String(formData.get("identity") || "").trim();
+  const password = String(formData.get("password") || "");
+  if (!identity || !password) {
+    toast("Enter your email or username and password.", "error");
+    return;
+  }
+
+  const body = { password };
   if (identity.includes("@")) body.email = identity; else body.username = identity;
   const button = $("button[type=submit]", form);
   button.disabled = true; button.textContent = "Signing in…";
   try {
+    state.token = "";
     const data = await request("/users/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!data?.accessToken || !data?.user) {
+      throw new Error("Login response was incomplete. Please try again.");
+    }
     state.token = data.accessToken;
     state.user = data.user;
     localStorage.setItem("streamly_access_token", state.token);
     localStorage.setItem("streamly_user", JSON.stringify(state.user));
     updateIdentityUI();
     setModal("auth-modal", false);
+    setModal("register-modal", false);
+    setModal("channel-modal", false);
     toast(`Welcome back, ${state.user.fullname || state.user.username}!`);
-    const next = state.afterLogin;
     state.afterLogin = null;
-    if (next) next(); else navigate();
-  } catch (error) { toast(error.message, "error"); }
+    goto("home");
+  } catch (error) {
+    toast(error.message || "Login failed. Check your credentials.", "error");
+  }
   finally { button.disabled = false; button.innerHTML = "Sign in <span>→</span>"; }
 }
 
@@ -430,19 +458,110 @@ async function handleRegister(form) {
   const button = $("button[type=submit]", form);
   button.disabled = true; button.textContent = "Creating account…";
   try {
-    await request("/users/register", { method: "POST", body: new FormData(form) });
-    toast("Account created. You can sign in now.");
+    const formData = new FormData(form);
+    const identity = String(formData.get("email") || formData.get("username") || "").trim();
+    const password = String(formData.get("password") || "");
+    await request("/users/register", { method: "POST", body: formData });
+
+    const loginBody = { password };
+    if (identity.includes("@")) loginBody.email = identity;
+    else loginBody.username = identity;
+
+    const data = await request("/users/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginBody),
+    });
+
+    state.token = data.accessToken;
+    state.user = data.user;
+    localStorage.setItem("streamly_access_token", state.token);
+    localStorage.setItem("streamly_user", JSON.stringify(state.user));
+    updateIdentityUI();
     form.reset();
-    setAuthTab("login");
+    setModal("register-modal", false);
+    setModal("auth-modal", false);
+    toast(`Welcome to Streamly, ${state.user.fullname || state.user.username}!`);
+    goto("home");
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; button.innerHTML = "Create account <span>→</span>"; }
+}
+
+async function handleChannel(form) {
+  if (!requireAuth()) return;
+  const button = $("button[type=submit]", form);
+  const status = $("#channel-status");
+  const data = new FormData(form);
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Saving your channel…";
+  try {
+    const user = await request("/users/update-account", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullname: data.get("fullname"), email: data.get("email") }),
+    });
+    const avatar = data.get("avatar");
+    const coverImage = data.get("coverImage");
+    if (avatar?.size) {
+      await request("/users/avatar", { method: "PATCH", body: (() => { const body = new FormData(); body.append("avatar", avatar); return body; })() });
+    }
+    if (coverImage?.size) {
+      await request("/users/cover-image", { method: "PATCH", body: (() => { const body = new FormData(); body.append("coverImage", coverImage); return body; })() });
+    }
+    state.user = { ...state.user, ...user };
+    localStorage.setItem("streamly_user", JSON.stringify(state.user));
+    updateIdentityUI();
+    form.reset();
+    setModal("channel-modal", false);
+    toast("Your channel is ready.");
+    renderLibrary();
+  } catch (error) {
+    status.textContent = error.message;
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save channel";
+  }
+}
+
+async function handleLogout() {
+  try {
+    if (state.token) await request("/users/logout", { method: "POST" });
+  } catch {
+    // Clear local session even when the server cannot be reached.
+  } finally {
+    state.token = "";
+    state.user = null;
+    state.afterLogin = null;
+    localStorage.removeItem("streamly_access_token");
+    localStorage.removeItem("streamly_user");
+    setModal("channel-modal", false);
+    setModal("auth-modal", false);
+    setModal("register-modal", false);
+    updateIdentityUI();
+    toast("You have been logged out.");
+    goto("home");
+  }
 }
 
 async function handleUpload(form) {
   if (!requireAuth()) return;
   const button = $("button[type=submit]", form);
   const status = $("#upload-status");
+  const videoFile = form.elements.videoFile?.files?.[0];
+  const thumbnail = form.elements.thumbnail?.files?.[0];
+  if (!videoFile || !thumbnail) {
+    toast("Select both a video file and a thumbnail.", "error");
+    return;
+  }
+  const sizeMB = (videoFile.size / (1024 * 1024)).toFixed(1);
+  if (videoFile.size > 500 * 1024 * 1024) {
+    toast("Video must be smaller than 500 MB.", "error");
+    return;
+  }
   button.disabled = true; status.hidden = false; status.textContent = "Uploading your video. Keep this window open…";
+  status.textContent = `Uploading ${videoFile.name} (${sizeMB} MB)…`;
   try {
     const video = await request("/videos", { method: "POST", body: new FormData(form) });
     form.reset();
@@ -555,12 +674,15 @@ function bindEvents() {
     if (!button) return;
     const action = button.dataset.action;
     if (action === "close-modal") { button.closest("dialog")?.close(); return; }
-    if (action === "open-login") { setAuthTab("login"); setModal("auth-modal", true); return; }
+    if (action === "open-login") { setModal("register-modal", false); setAuthTab("login"); return; }
+    if (action === "open-register") { setModal("auth-modal", false); setAuthTab("register"); return; }
+    if (action === "open-channel") { if (requireAuth()) { $("#channel-form [name=fullname]").value = state.user?.fullname || ""; $("#channel-form [name=email]").value = state.user?.email || ""; setModal("channel-modal", true); } return; }
+    if (action === "logout") { handleLogout(); return; }
     if (action === "open-upload") { if (requireAuth()) setModal("upload-modal", true); return; }
     if (action === "open-playlist") { if (requireAuth()) setModal("playlist-modal", true); return; }
     if (action === "toggle-theme") { updateTheme(); return; }
     if (action === "toggle-sidebar") { document.body.classList.toggle("sidebar-collapsed"); return; }
-    if (action === "open-account") { state.user ? goto("library") : setModal("auth-modal", true); return; }
+    if (action === "open-account") { state.user ? setModal("channel-modal", true) : setModal("auth-modal", true); return; }
     if (action === "mobile-search") { const value = window.prompt("Search Streamly"); if (value?.trim()) goto(`search/${encodeURIComponent(value.trim())}`); return; }
     if (action === "explore-featured") { state.activeCategory = "Design"; renderHome(); return; }
     if (action === "reset-search") { state.activeCategory = "All"; goto("home"); return; }
@@ -577,6 +699,7 @@ function bindEvents() {
     if (event.target.id === "search-form") { event.preventDefault(); const query = new FormData(event.target).get("search") || $("#search-input").value; if (query.trim()) goto(`search/${encodeURIComponent(query.trim())}`); return; }
     if (event.target.id === "login-form") { event.preventDefault(); handleLogin(event.target); return; }
     if (event.target.id === "register-form") { event.preventDefault(); handleRegister(event.target); return; }
+    if (event.target.id === "channel-form") { event.preventDefault(); handleChannel(event.target); return; }
     if (event.target.id === "upload-form") { event.preventDefault(); handleUpload(event.target); return; }
     if (event.target.id === "playlist-form") { event.preventDefault(); handlePlaylist(event.target); return; }
     if (event.target.id === "comment-form") { event.preventDefault(); handleComment(event.target); }

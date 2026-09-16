@@ -1,5 +1,6 @@
 import { v2 as cloudinary } from "cloudinary";
 import fs from "fs";
+import path from "node:path";
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -11,10 +12,14 @@ cloudinary.config({
 const uploadOnCloudinary = async (localFilePath) => {
   try {
     if (!localFilePath) return null;
-    // Upload the file to Cloudinary
-    const response = await cloudinary.uploader.upload(localFilePath, {
-      resource_type: "auto", // This will automatically detect the file type (image, video, etc.)
-    });
+    const videoExtensions = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
+    const isVideo = videoExtensions.has(path.extname(localFilePath).toLowerCase());
+    const options = isVideo
+      ? { resource_type: "video", chunk_size: 20_000_000 }
+      : { resource_type: "image" };
+    const response = isVideo
+      ? await cloudinary.uploader.upload_large(localFilePath, options)
+      : await cloudinary.uploader.upload(localFilePath, options);
     // file uploaded successfully
    // console.log("File uploaded successfully to Cloudinary:", response.url);
   if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);

@@ -248,7 +248,7 @@ input[type="file"]::file-selector-button { margin-right: 8px; padding: 5px 7px; 
 .thumbnail-field { padding: 9px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }
 .upload-status { padding: 8px 10px; border-radius: 7px; background: var(--surface-raised); color: var(--muted); font-size: 12px; }
 .small-modal { width: min(440px, calc(100vw - 26px)); }
-.compact-panel { padding: 34px; }
+.compact-panel { max-height: min(680px, calc(100vh - 26px)); padding: 34px; overflow-y: auto; }
 .compact-panel .eyebrow { margin-bottom: -5px; }
 
 .toast-region { position: fixed; z-index: 80; right: 18px; bottom: 18px; display: grid; gap: 8px; width: min(360px, calc(100vw - 36px)); }

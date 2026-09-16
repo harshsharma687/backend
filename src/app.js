@@ -6,8 +6,10 @@ import multer from "multer"
 const app = express()
 
 app.use(cors({
-    origin : process.env.CORS_ORIGIN,
-    credentials : true
+    origin: (requestOrigin, callback) => {
+        callback(null, requestOrigin || "http://localhost:8000");
+    },
+    credentials: true,
 }))
 
 app.use(express.json({limit: "20kb"}))
