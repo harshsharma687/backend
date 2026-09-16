@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f0f0f" />
+    <meta name="description" content="Streamly — a modern video community" />
+    <title>Streamly — watch, share, belong</title>
+    <link rel="preconnect" href="https://images.unsplash.com" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-area">
+          <button class="icon-button menu-toggle" type="button" aria-label="Toggle navigation" data-action="toggle-sidebar">☰</button>
+          <a class="brand" href="#home" aria-label="Streamly home">
+            <span class="brand-mark">▶</span><span>streamly</span>
+          </a>
+        </div>
+
+        <form class="search" id="search-form" role="search">
+          <label class="sr-only" for="search-input">Search videos</label>
+          <input id="search-input" type="search" autocomplete="off" placeholder="Search videos, channels and topics" />
+          <button class="search-submit" type="submit" aria-label="Search">⌕</button>
+        </form>
+
+        <div class="topbar-actions">
+          <button class="icon-button mobile-search" type="button" aria-label="Search" data-action="mobile-search">⌕</button>
+          <button class="create-button" type="button" data-action="open-upload"><span>＋</span><b>Create</b></button>
+          <button class="icon-button theme-button" type="button" aria-label="Switch colour theme" data-action="toggle-theme">◐</button>
+          <button class="profile-button" type="button" data-action="open-account" aria-label="Open account menu">
+            <img id="nav-avatar" alt="Your profile" />
+            <span id="nav-initials">G</span>
+          </button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="Primary navigation">
+        <nav class="nav-list" id="primary-nav">
+          <a href="#home" class="nav-item active" data-route="home"><span>⌂</span><b>Home</b></a>
+          <a href="#shorts" class="nav-item" data-route="shorts"><span>◉</span><b>Shorts</b></a>
+          <a href="#subscriptions" class="nav-item" data-route="subscriptions"><span>▣</span><b>Subscriptions</b></a>
+          <div class="nav-divider"></div>
+          <a href="#library" class="nav-item" data-route="library"><span>▤</span><b>Library</b></a>
+          <a href="#history" class="nav-item" data-route="history"><span>◷</span><b>History</b></a>
+          <a href="#playlists" class="nav-item" data-route="playlists"><span>≡</span><b>Playlists</b></a>
+          <div class="nav-divider"></div>
+        </nav>
+        <section class="sidebar-login" id="sidebar-login">
+          <p>Sign in to like videos, comment and build your own library.</p>
+          <button class="outline-button" type="button" data-action="open-login">Sign in</button>
+        </section>
+        <section class="subscriptions-mini" id="subscriptions-mini" hidden>
+          <p class="sidebar-heading">Subscriptions</p>
+          <div id="subscription-list"></div>
+        </section>
+        <p class="sidebar-footer">© 2026 Streamly</p>
+      </aside>
+
+      <main id="app-main" class="main-content" tabindex="-1">
+        <div class="page-loading"><span class="spinner"></span><p>Loading your feed…</p></div>
+      </main>
+    </div>
+
+    <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+
+    <dialog class="modal" id="auth-modal">
+      <div class="modal-panel auth-panel">
+        <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
+        <div class="auth-art"><span class="brand-mark large">▶</span><h2>Find your next favourite.</h2><p>Join a community made for curious people.</p></div>
+        <div class="auth-content">
+          <div class="auth-tabs" role="tablist">
+            <button type="button" class="auth-tab active" data-auth-tab="login">Sign in</button>
+            <button type="button" class="auth-tab" data-auth-tab="register">Create account</button>
+          </div>
+          <form id="login-form" class="auth-form">
+            <h2>Welcome back</h2><p>Sign in to pick up where you left off.</p>
+            <label>Email or username<input name="identity" required autocomplete="username" placeholder="yourname" /></label>
+            <label>Password<input name="password" required minlength="6" type="password" autocomplete="current-password" placeholder="••••••••" /></label>
+            <button class="primary-button wide" type="submit">Sign in <span>→</span></button>
+          </form>
+          <form id="register-form" class="auth-form" hidden>
+            <h2>Create your channel</h2><p>It only takes a moment to get started.</p>
+            <div class="form-row"><label>Full name<input name="fullname" required placeholder="Harsh Parashar" /></label><label>Username<input name="username" required pattern="[A-Za-z0-9_]+" placeholder="harsh" /></label></div>
+            <label>Email<input name="email" required type="email" autocomplete="email" placeholder="you@example.com" /></label>
+            <label>Password<input name="password" required minlength="6" type="password" autocomplete="new-password" placeholder="At least 6 characters" /></label>
+            <label class="file-label">Profile photo <small>Required · JPG or PNG</small><input name="avatar" required type="file" accept="image/*" /></label>
+            <label class="file-label">Channel cover <small>Optional</small><input name="coverImage" type="file" accept="image/*" /></label>
+            <button class="primary-button wide" type="submit">Create account <span>→</span></button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="upload-modal">
+      <form class="modal-panel upload-panel" id="upload-form">
+        <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
+        <div class="modal-heading"><span class="eyebrow">Creator studio</span><h2>Upload a video</h2><p>Share something worth watching with your community.</p></div>
+        <div class="upload-layout">
+          <label class="drop-zone" id="video-drop-zone"> <span class="upload-icon">⇧</span><strong>Select a video</strong><small>MP4, WebM or MOV · up to 500 MB</small><input required name="videoFile" type="file" accept="video/*" /></label>
+          <div class="upload-fields">
+            <label>Title<input required name="title" maxlength="100" placeholder="Give your video a clear, compelling title" /></label>
+            <label>Description<textarea required name="description" maxlength="5000" placeholder="Tell viewers what they can expect"></textarea></label>
+            <label class="thumbnail-field">Thumbnail <small>Required · 16:9 works best</small><input required name="thumbnail" type="file" accept="image/*" /></label>
+            <div class="upload-status" id="upload-status" hidden></div>
+            <button class="primary-button" type="submit">Publish video <span>↑</span></button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal small-modal" id="playlist-modal">
+      <form class="modal-panel compact-panel" id="playlist-form">
+        <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
+        <span class="eyebrow">Your library</span><h2>Create a playlist</h2>
+        <label>Name<input name="name" maxlength="120" required placeholder="e.g. Watch later" /></label>
+        <label>Description<textarea name="description" required maxlength="500" placeholder="What belongs in this collection?"></textarea></label>
+        <button class="primary-button wide" type="submit">Create playlist</button>
+      </form>
+    </dialog>
+
+    <template id="video-card-template">
+      <article class="video-card">
+        <button class="video-thumb" type="button"><img alt="" loading="lazy" /><span class="duration"></span><span class="watch-overlay">Play now <b>▶</b></span></button>
+        <div class="video-meta"><img class="channel-avatar" alt="" /><div><h3></h3><button class="channel-link" type="button"></button><p class="video-stats"></p></div><button class="more-button" type="button" aria-label="More options">⋮</button></div>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

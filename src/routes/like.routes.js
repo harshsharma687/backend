@@ -5,6 +5,6 @@ import { verifyJWT } from "../middlewares/auth.middleware.js";
 const router = Router();
 
 router.route("/toggle").post(verifyJWT, toggleLike);
-router.route("/count").post(verifyJWT, getLikeCount);
+router.route("/count").post(getLikeCount);
 
 export default router;

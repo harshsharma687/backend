@@ -30,4 +30,18 @@ const verifyJWT = asyncHandler(async (req, _, next) => {
   }
 });   
 
-export {verifyJWT}
+const optionalJWT = asyncHandler(async (req, _, next) => {
+  const token = req.cookies?.accessToken || req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+  if (!token) return next();
+
+  try {
+    const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    const user = await User.findById(decodedToken?._id).select("-password -refreshToken");
+    if (user) req.user = user;
+  } catch {
+    // Browsing public videos should not fail because an expired browser token exists.
+  }
+  next();
+});
+
+export {verifyJWT, optionalJWT}
