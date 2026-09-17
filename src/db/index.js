@@ -3,7 +3,11 @@ import { DB_NAME } from "../constants.js";
 
 import dns from "dns";
 
-dns.setServers(["1.1.1.1", "8.8.8.1"]);
+// Some ISPs' DNS servers refuse SRV queries, which breaks the
+// mongodb+srv:// connection string (querySrv ECONNREFUSED). Route DNS to
+// Cloudflare / Google, which answer SRV queries reliably.
+// NOTE: Google DNS is 8.8.8.8 — 8.8.8.1 was a typo.
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const connectToDatabase = async () => {
   try {

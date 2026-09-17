@@ -1,75 +1,33 @@
 import dotenv from "dotenv";
-import connectToDatabase from "./db/index.js";
-import {app} from "./app.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-dotenv.config({
-    path: "./.env"
-});
+// Load .env FIRST (relative to this file, not the cwd) so every module imported
+// below sees the env vars at import time (cloudinary config, etc).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
+// Some shells/systems leak a bogus PORT (e.g. PORT=0) into the environment.
+// A falsy/invalid port makes app.listen() bind to a RANDOM port, which is why
+// the server seemed unreachable on 8000. Always sanitise it.
+const parsedPort = Number.parseInt(process.env.PORT, 10);
+const PORT =
+  Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535
+    ? parsedPort
+    : 8000;
+
+// Import app modules AFTER env is loaded.
+const [{ app }, { default: connectToDatabase }] = await Promise.all([
+  import("./app.js"),
+  import("./db/index.js"),
+]);
 
 connectToDatabase()
-.then(() => {
-    app.listen(process.env.PORT || 8000, () => {
-        console.log(`server is running at port: ${process.env.PORT || 8000}`)
-    })
-})
-.catch((error) => {
-    console.log("mongo db connection failed !!!" , error)
-})
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// import express from "express";
-
-// const app = express();
-
-// ( async () => {
-//     try{
-//        await   mongoose.connect(`${process.env.MONGODB_URI}/${DB_NAME}`)
-//        app.on("error", (error) => {
-//            console.error("Error connecting to MongoDB:", error);
-//            throw error;
-//        });
-
-//        app.listen(process.env.PORT, () => {
-//               console.log(`Server is running on port ${process.env.PORT}`);
-//        });
-       
-//     } catch (error){
-//        console.log("error : " ,error);
-//        throw error;
-//     }
-// })()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`server is running at port: ${PORT}`);
+    });
+  })  .catch((error) => {
+    console.log("mongo db connection failed !!!", error);
+    process.exit(1);
+  });

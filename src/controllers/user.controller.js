@@ -55,6 +55,8 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new ApiError(409, "User already exists");
   }
   //  console.log("req.files:", req.files)
+  // Avatar is optional now — users can sign up without a profile photo and
+  // the UI falls back to an initial. coverImage was already optional.
   const avatarLocalPath = req.files?.avatar?.[0]?.path;
   //const coverImageLocalPath = req.files?.coverImage?.[0]?.path;
 
@@ -67,20 +69,12 @@ const registerUser = asyncHandler(async (req, res) => {
     coverImageLocalPath = req.files.coverImage[0].path;
   }
 
-  if (!avatarLocalPath) {
-    throw new ApiError(400, "Avatar image is required");
-  }
-
   const avatar = await uploadOnCloudinary(avatarLocalPath);
   const coverImage = await uploadOnCloudinary(coverImageLocalPath);
 
-  if (!avatar) {
-    throw new ApiError(400, "avatar image upload required");
-  }
-
   const user = await User.create({
     fullname,
-    avatar: avatar.url,
+    avatar: avatar?.url || "",
     coverImage: coverImage?.url || "",
     email,
     username: username.toLowerCase(),
@@ -95,9 +89,27 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new ApiError(500, "User creation failed");
   }
 
+  // Log the user in right after signup so the frontend can immediately use
+  // protected routes (channel, upload, etc.) without a separate login call.
+  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
+    user._id
+  );
+
   return res
     .status(201)
-    .json(new ApiResponse(200, createdUser, "User created successfully"));
+    .cookie("accessToken", accessToken, authCookieOptions)
+    .cookie("refreshToken", refreshToken, authCookieOptions)
+    .json(
+      new ApiResponse(
+        201,
+        {
+          user: createdUser,
+          accessToken,
+          refreshToken,
+        },
+        "User registered successfully"
+      )
+    );
 });
 
 const loginUser = asyncHandler(async (req, res) => {
@@ -162,8 +174,8 @@ const logoutUser = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .clearCookie("accessToken", authCookieOptions)
-    .clearCookie("refreshToken", authCookieOptions)
+    .clearCookie("accessToken")
+    .clearCookie("refreshToken")
     .json(new ApiResponse(200, {}, "User logged out successfully"));
 });
 

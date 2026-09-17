@@ -11,7 +11,7 @@ const storage = multer.diskStorage({
   },
 });
 
-const imageFields = new Set(["avatar", "coverImage", "thumbnail"]);
+const imageFields = new Set(["avatar", "coverImage", "thumbnail", "image"]);
 
 const fileFilter = (req, file, cb) => {
   const isAllowedImage = imageFields.has(file.fieldname) && file.mimetype.startsWith("image/");
@@ -26,4 +26,10 @@ export const upload = multer({
   fileFilter,
   limits: { fileSize: 500 * 1024 * 1024 },
 });
-  
+
+// Posts accept a single image only.
+export const postImage = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});

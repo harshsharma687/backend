@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f0f0f" />
-    <meta name="description" content="Streamly — a modern video community" />
-    <title>Streamly — watch, share, belong</title>
+    <meta name="theme-color" content="#FFF9DB" />
+    <meta name="description" content="NovaPlay — a modern video community" />
+    <title>NovaPlay — watch, share, belong</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23f8dc8a'/%3E%3Cstop offset='1' stop-color='%23e5a93e'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='2' y='2' width='44' height='44' rx='13' fill='url(%23g)'/%3E%3Cpath d='M18.6 16.1v15.8c0 1.6 1.75 2.55 3.1 1.75l13.1-7.9c1.3-.8 1.3-2.7 0-3.5l-13.1-7.9c-1.35-.8-3.1.15-3.1 1.75z' fill='%2333290f'/%3E%3Cpath d='M36.7 6.2l1.3 3.8 3.8 1.3-3.8 1.3-1.3 3.8-1.3-3.8-3.8-1.3 3.8-1.3z' fill='%23fffdf2'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://images.unsplash.com" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -14,8 +15,8 @@
       <header class="topbar">
         <div class="brand-area">
           <button class="icon-button menu-toggle" type="button" aria-label="Toggle navigation" data-action="toggle-sidebar">☰</button>
-          <a class="brand" href="#home" aria-label="Streamly home">
-            <span class="brand-mark">▶</span><span>streamly</span>
+          <a class="brand" href="#home" aria-label="NovaPlay home">
+            <span class="brand-mark"><svg viewBox="0 0 48 48" aria-hidden="true" focusable="false"><defs><linearGradient id="np-g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8dc8a"/><stop offset=".55" stop-color="#f4c95d"/><stop offset="1" stop-color="#e0a435"/></linearGradient></defs><rect x="2" y="2" width="44" height="44" rx="13" fill="url(#np-g1)"/><path d="M18.6 16.1v15.8c0 1.6 1.75 2.55 3.1 1.75l13.1-7.9c1.3-.8 1.3-2.7 0-3.5l-13.1-7.9c-1.35-.8-3.1.15-3.1 1.75z" fill="#33290f"/><path d="M36.7 6.2l1.3 3.8 3.8 1.3-3.8 1.3-1.3 3.8-1.3-3.8-3.8-1.3 3.8-1.3z" fill="#fffdf2"/></svg></span><span>nova<b class="brand-accent">play</b></span>
           </a>
         </div>
 
@@ -41,6 +42,7 @@
           <a href="#home" class="nav-item active" data-route="home"><span>⌂</span><b>Home</b></a>
           <a href="#shorts" class="nav-item" data-route="shorts"><span>◉</span><b>Shorts</b></a>
           <a href="#subscriptions" class="nav-item" data-route="subscriptions"><span>▣</span><b>Subscriptions</b></a>
+          <a href="#posts" class="nav-item" data-route="posts"><span>❏</span><b>Posts</b></a>
           <div class="nav-divider"></div>
           <a href="#library" class="nav-item" data-route="library"><span>▤</span><b>Library</b></a>
           <a href="#history" class="nav-item" data-route="history"><span>◷</span><b>History</b></a>
@@ -55,7 +57,7 @@
           <p class="sidebar-heading">Subscriptions</p>
           <div id="subscription-list"></div>
         </section>
-        <p class="sidebar-footer">© 2026 Streamly</p>
+        <p class="sidebar-footer">© 2026 NovaPlay</p>
       </aside>
 
       <main id="app-main" class="main-content" tabindex="-1">
@@ -68,7 +70,7 @@
     <dialog class="modal" id="auth-modal">
       <div class="modal-panel auth-panel">
         <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
-        <div class="auth-art"><span class="brand-mark large">▶</span><h2>Find your next favourite.</h2><p>Join a community made for curious people.</p></div>
+        <div class="auth-art"><span class="brand-mark large"><svg viewBox="0 0 48 48" aria-hidden="true" focusable="false"><defs><linearGradient id="np-g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8dc8a"/><stop offset=".55" stop-color="#f4c95d"/><stop offset="1" stop-color="#e0a435"/></linearGradient></defs><rect x="2" y="2" width="44" height="44" rx="13" fill="url(#np-g2)"/><path d="M18.6 16.1v15.8c0 1.6 1.75 2.55 3.1 1.75l13.1-7.9c1.3-.8 1.3-2.7 0-3.5l-13.1-7.9c-1.35-.8-3.1.15-3.1 1.75z" fill="#33290f"/><path d="M36.7 6.2l1.3 3.8 3.8 1.3-3.8 1.3-1.3 3.8-1.3-3.8-3.8-1.3 3.8-1.3z" fill="#fffdf2"/></svg></span><h2>Find your next favourite.</h2><p>Join a community made for curious people.</p></div>
         <div class="auth-content">
           <form id="login-form" class="auth-form">
             <h2>Welcome back</h2><p>Sign in to pick up where you left off.</p>
@@ -84,14 +86,14 @@
     <dialog class="modal" id="register-modal">
       <div class="modal-panel auth-panel">
         <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
-        <div class="auth-art"><span class="brand-mark large">▶</span><h2>Make space for your ideas.</h2><p>Create your account, then build your channel inside the app.</p></div>
+        <div class="auth-art"><span class="brand-mark large"><svg viewBox="0 0 48 48" aria-hidden="true" focusable="false"><defs><linearGradient id="np-g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8dc8a"/><stop offset=".55" stop-color="#f4c95d"/><stop offset="1" stop-color="#e0a435"/></linearGradient></defs><rect x="2" y="2" width="44" height="44" rx="13" fill="url(#np-g3)"/><path d="M18.6 16.1v15.8c0 1.6 1.75 2.55 3.1 1.75l13.1-7.9c1.3-.8 1.3-2.7 0-3.5l-13.1-7.9c-1.35-.8-3.1.15-3.1 1.75z" fill="#33290f"/><path d="M36.7 6.2l1.3 3.8 3.8 1.3-3.8 1.3-1.3 3.8-1.3-3.8-3.8-1.3 3.8-1.3z" fill="#fffdf2"/></svg></span><h2>Make space for your ideas.</h2><p>Create your account, then build your channel inside the app.</p></div>
         <div class="auth-content">
           <form id="register-form" class="auth-form">
             <h2>Create account</h2><p>Start with your profile. You can create your channel after signing in.</p>
             <div class="form-row"><label>Full name<input name="fullname" required placeholder="Harsh Parashar" /></label><label>Username<input name="username" required pattern="[A-Za-z0-9_]+" placeholder="harsh" /></label></div>
             <label>Email<input name="email" required type="email" autocomplete="email" placeholder="you@example.com" /></label>
             <label>Password<input name="password" required minlength="6" type="password" autocomplete="new-password" placeholder="At least 6 characters" /></label>
-            <label class="file-label">Profile photo <small>Required · JPG or PNG</small><input name="avatar" required type="file" accept="image/*" /></label>
+            <label class="file-label">Profile photo <small>Optional · JPG or PNG</small><input name="avatar" type="file" accept="image/*" /></label>
             <label class="file-label">Channel cover <small>Optional</small><input name="coverImage" type="file" accept="image/*" /></label>
             <button class="primary-button wide" type="submit">Create account <span>→</span></button>
           </form>
@@ -116,7 +118,7 @@
     </dialog>
 
     <dialog class="modal" id="upload-modal">
-      <form class="modal-panel upload-panel" id="upload-form">
+      <form class="modal-panel upload-panel" id="upload-form" autocomplete="off">
         <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
         <div class="modal-heading"><span class="eyebrow">Creator studio</span><h2>Upload a video</h2><p>Share something worth watching with your community.</p></div>
         <div class="upload-layout">
@@ -139,6 +141,17 @@
         <label>Name<input name="name" maxlength="120" required placeholder="e.g. Watch later" /></label>
         <label>Description<textarea name="description" required maxlength="500" placeholder="What belongs in this collection?"></textarea></label>
         <button class="primary-button wide" type="submit">Create playlist</button>
+      </form>
+    </dialog>
+
+    <dialog class="modal small-modal" id="post-modal">
+      <form class="modal-panel compact-panel" id="post-form" enctype="multipart/form-data" autocomplete="off">
+        <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
+        <span class="eyebrow">Community</span><h2>Create a post</h2>
+        <p class="modal-note">Share a single image with an optional caption.</p>
+        <label class="file-label">Image <small>Required · JPG or PNG · up to 10 MB</small><input name="image" required type="file" accept="image/*" /></label>
+        <label>Caption <small>Optional</small><textarea name="caption" maxlength="500" placeholder="Say something about this image…"></textarea></label>
+        <button class="primary-button wide" type="submit">Share post</button>
       </form>
     </dialog>
 

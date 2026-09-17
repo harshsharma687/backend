@@ -1,9 +1,11 @@
 import { Video } from "../models/video.model.js";
 import { User } from "../models/user.model.js";
+import { Comment } from "../models/comment.model.js";
+import { Like } from "../models/like.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
-import { uploadOnCloudinary } from "../utils/cloudinary.js";
+import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
 
 const ownerFields = "username fullname avatar";
 
@@ -57,8 +59,8 @@ const publishAVideo = asyncHandler(async (req, res) => {
   const videoFilePath = req.files?.videoFile?.[0]?.path;
   const thumbnailPath = req.files?.thumbnail?.[0]?.path;
 
-  if (!title?.trim() || !description?.trim()) {
-    throw new ApiError(400, "Title and description are required");
+  if (!title?.trim()) {
+    throw new ApiError(400, "Title is required");
   }
   if (!videoFilePath || !thumbnailPath) {
     throw new ApiError(400, "Video file and thumbnail are required");
@@ -78,10 +80,13 @@ const publishAVideo = asyncHandler(async (req, res) => {
     videofile: videoUpload.secure_url || videoUpload.url,
     thumbnail: thumbnailUpload.secure_url || thumbnailUpload.url,
     title: title.trim(),
-    description: description.trim(),
-    duration: Number.isFinite(requestedDuration) && requestedDuration > 0
-      ? requestedDuration
-      : Math.round(videoUpload.duration || 0),
+    // Cloudinary video upload gives duration in seconds; use it when the
+    // client doesn't send one. Keep it > 0 or the model validation rejects
+    // the video with a confusing "duration required" error.
+    duration:
+      Number.isFinite(requestedDuration) && requestedDuration > 0
+        ? Math.round(requestedDuration)
+        : Math.max(1, Math.round(videoUpload.duration || 0)),
     owner: req.user._id,
   });
 
@@ -147,6 +152,24 @@ const deleteVideo = asyncHandler(async (req, res) => {
   });
 
   if (!video) throw new ApiError(404, "Video not found");
+
+  // Best-effort Cloudinary cleanup — a failed CDN delete should not block
+  // the DB delete (the video is already gone for the user).
+  await Promise.allSettled([
+    deleteFromCloudinary(video.videofile, "video"),
+    deleteFromCloudinary(video.thumbnail, "image"),
+  ]);
+
+  // Remove orphaned comments, likes and history references.
+  await Promise.all([
+    Comment.deleteMany({ video: video._id }),
+    Like.deleteMany({ video: video._id }),
+    User.updateMany(
+      { watchHistory: video._id },
+      { $pull: { watchHistory: video._id } }
+    ),
+  ]);
+
   return res.status(200).json(new ApiResponse(200, {}, "Video deleted"));
 });
 

@@ -67,7 +67,7 @@ function relativeDate(value) {
   return `${months}mo ago`;
 }
 
-function avatarFor(owner = {}) { return owner.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(owner.fullname || owner.username || "Streamly")}&background=5d55b8&color=fff&bold=true`; }
+function avatarFor(owner = {}) { return owner.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(owner.fullname || owner.username || "NovaPlay")}&background=f4c95d&color=33290f&bold=true`; }
 
 function normaliseVideo(video = {}) {
   return {
@@ -105,6 +105,44 @@ function toast(message, kind = "success") {
   setTimeout(() => element.remove(), 3600);
 }
 
+// Small floating menu for the ⋮ button on the user's own video cards.
+function closeVideoMenu() { $("#video-menu")?.remove(); }
+
+function openVideoMenu(button) {
+  closeVideoMenu();
+  const menu = document.createElement("div");
+  menu.id = "video-menu";
+  menu.className = "video-menu glass";
+  menu.innerHTML = `
+    <button type="button" data-menu-action="watch" data-video-id="${escapeAttribute(button.dataset.videoId)}">▶ Watch</button>
+    <button type="button" class="danger" data-menu-action="delete" data-video-id="${escapeAttribute(button.dataset.videoId)}">🗑 Delete video</button>`;
+  document.body.append(menu);
+  const rect = button.getBoundingClientRect();
+  const width = menu.offsetWidth || 180;
+  const height = menu.offsetHeight || 90;
+  menu.style.top = `${Math.min(window.innerHeight - height - 12, rect.bottom + 6)}px`;
+  menu.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width))}px`;
+}
+
+async function deleteVideo(videoId) {
+  if (!requireAuth()) return;
+  if (!window.confirm("Delete this video permanently? This also removes its comments, likes and files.")) return;
+  closeVideoMenu();
+  try {
+    await request(`/videos/${videoId}`, { method: "DELETE" });
+    state.videos = state.videos.filter((video) => video._id !== videoId);
+    toast("Video deleted.");
+    if (state.activeVideo?._id === videoId) {
+      state.activeVideo = null;
+      goto("home");
+    } else {
+      navigate(); // refresh the current page (channel/library/home) without a reload
+    }
+  } catch (error) {
+    toast(error.message || "Could not delete the video.", "error");
+  }
+}
+
 function setLoading(message = "Loading…") {
   main.innerHTML = `<div class="page-loading"><span class="spinner"></span><p>${escapeHTML(message)}</p></div>`;
 }
@@ -114,6 +152,15 @@ function setModal(id, open) {
   if (!modal) return;
   if (open && !modal.open) modal.showModal();
   if (!open && modal.open) modal.close();
+}
+
+// Creator forms live in the static HTML, so their values survive modal
+// close/reopen and even account switches (browser form restoration keeps the
+// previous user's draft). Always start a new upload/playlist from a clean
+// slate so one account's title/description can never leak into another's.
+function resetCreatorForms() {
+  $("#upload-form")?.reset();
+  $("#playlist-form")?.reset();
 }
 
 function requireAuth(afterLogin) {
@@ -180,6 +227,14 @@ function createVideoCard(video) {
   channel.dataset.channel = item.owner.username || "";
   stats.textContent = `${formatViews(item.views)} · ${relativeDate(item.createdAt)}`;
   $(".duration", fragment).textContent = formatDuration(item.duration);
+  // Own videos get a small ⋮ menu with a Delete option (and Watch).
+  if (isCurrentUser(item.owner?._id) && !isDemo(item._id)) {
+    const more = $(".more-button", fragment);
+    more.dataset.action = "video-menu";
+    more.dataset.videoId = item._id;
+    more.dataset.videoTitle = item.title;
+    more.setAttribute("aria-label", "Video options");
+  }
   return fragment;
 }
 
@@ -282,7 +337,7 @@ async function renderWatch(videoId) {
         <h1 class="watch-title">${escapeHTML(video.title)}</h1>
         <div class="watch-info-row">
           <div class="channel-summary"><img src="${escapeAttribute(avatarFor(owner))}" alt="" /><div><strong>${escapeHTML(owner.fullname || owner.username)}</strong><small>${escapeHTML(owner.username ? `@${owner.username}` : "Creator")}</small></div>${!ownVideo ? `<button class="subscribe-button" type="button" data-action="subscribe" data-channel-id="${escapeAttribute(owner._id)}">Subscribe</button>` : ""}</div>
-          <div class="watch-actions"><button class="action-button" type="button" data-action="like" data-video-id="${escapeAttribute(video._id)}">♡ <span id="like-count">0</span></button><button class="action-button" type="button" data-action="save-video" data-video-id="${escapeAttribute(video._id)}">＋ Save</button><button class="action-button" type="button" data-action="share-video" data-video-id="${escapeAttribute(video._id)}">↗ Share</button></div>
+          <div class="watch-actions"><button class="action-button" type="button" data-action="like" data-video-id="${escapeAttribute(video._id)}">♡ <span id="like-count">0</span></button><button class="action-button" type="button" data-action="save-video" data-video-id="${escapeAttribute(video._id)}">＋ Save</button><button class="action-button" type="button" data-action="share-video" data-video-id="${escapeAttribute(video._id)}">↗ Share</button>${ownVideo && !isDemo(video._id) ? `<button class="action-button delete-video-button" type="button" data-action="delete-video" data-video-id="${escapeAttribute(video._id)}">🗑 Delete</button>` : ""}</div>
         </div>
         <div class="video-description"><small>${formatViews(video.views)} · ${relativeDate(video.createdAt)}</small>${escapeHTML(video.description)}</div>
         <section class="comments-section"><h2 class="comments-title" id="comments-heading">Comments</h2><div id="comment-area"></div><div class="comment-list" id="comment-list"><div class="page-loading"><span class="spinner"></span></div></div></section>
@@ -316,7 +371,14 @@ async function renderChannel(username) {
   const ownChannel = isCurrentUser(channel._id);
   main.innerHTML = `
     <section class="channel-banner">${channel.coverImage ? `<img src="${escapeAttribute(channel.coverImage)}" alt="" />` : ""}</section>
-    <section class="channel-profile"><img src="${escapeAttribute(avatarFor(channel))}" alt="" /><div><h1>${escapeHTML(channel.fullname || channel.username)}</h1><p>@${escapeHTML(channel.username)} · ${Number(channel.subscribersCount || 0).toLocaleString()} subscribers · ${videos.length} videos</p></div>${!ownChannel ? `<button class="subscribe-button ${channel.isSubscribed ? "subscribed" : ""}" type="button" data-action="subscribe" data-channel-id="${escapeAttribute(channel._id)}">${channel.isSubscribed ? "Subscribed" : "Subscribe"}</button>` : ""}</section>
+    <section class="channel-profile">
+      <img src="${escapeAttribute(avatarFor(channel))}" alt="" />
+      <div class="channel-profile-info">
+        <h1>${escapeHTML(channel.fullname || channel.username)}</h1>
+        <p>@${escapeHTML(channel.username || "creator")} · <b>${Number(channel.subscribersCount || 0).toLocaleString()}</b> subscribers · <b>${Number(videos.length)}</b> videos</p>
+      </div>
+      ${!ownChannel ? `<button class="subscribe-button ${channel.isSubscribed ? "subscribed" : ""}" type="button" data-action="subscribe" data-channel-id="${escapeAttribute(channel._id)}">${channel.isSubscribed ? "Subscribed" : "Subscribe"}</button>` : ""}
+    </section>
     <section class="section-heading"><h2>Videos</h2></section><div class="video-grid"></div>`;
   renderVideoGrid(videos);
 }
@@ -401,6 +463,145 @@ async function renderShorts() {
   renderVideoGrid(videos.filter((video) => Number(video.duration) < 900));
 }
 
+// ---------- Posts (image-only) ----------
+
+function renderPostComments(comments) {
+  if (!comments.length) return `<p class="posts-empty">No comments yet.</p>`;
+  return comments
+    .map((comment) => {
+      const owner = comment.owner || {};
+      const own = state.user && String(owner._id) === String(state.user._id);
+      return `<article class="comment" data-comment-id="${escapeAttribute(comment._id)}"><img src="${escapeAttribute(avatarFor(owner))}" alt="" /><div><span class="comment-name">${escapeHTML(owner.fullname || owner.username)}<span class="comment-time">${relativeDate(comment.createdAt)}</span></span><p>${escapeHTML(comment.content)}</p>${own ? `<button class="text-button comment-delete" type="button" data-action="delete-post-comment" data-comment-id="${escapeAttribute(comment._id)}">Delete</button>` : ""}</div></article>`;
+    })
+    .join("");
+}
+
+async function renderPosts() {
+  main.innerHTML = `<section class="page-head"><div><h1>Posts</h1><p>Share moments as images — like and comment with your community.</p></div>${state.user ? `<button class="primary-button" type="button" data-action="open-post-composer"><span>＋</span> New post</button>` : ""}</section><div class="posts-list" id="posts-list"><div class="page-loading"><span class="spinner"></span><p>Loading posts…</p></div></div>`;
+
+  let posts = [];
+  try {
+    const data = await request("/posts");
+    posts = Array.isArray(data) ? data : [];
+  } catch (error) {
+    main.querySelector("#posts-list").innerHTML = `<p class="posts-empty">${escapeHTML(error.message || "Could not load posts.")}</p>`;
+    return;
+  }
+
+  const list = main.querySelector("#posts-list");
+  if (!posts.length) {
+    list.innerHTML = `<p class="posts-empty">No posts yet. ${state.user ? "Create the first one!" : "Sign in to create the first one."}</p>`;
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const post of posts) {
+    const owner = post.owner || {};
+    const own = state.user && String(owner._id) === String(state.user._id);
+    const card = document.createElement("article");
+    card.className = "post-card";
+    card.dataset.postId = post._id;
+    card.innerHTML = `
+      <header class="post-head">
+        <img class="channel-avatar" src="${escapeAttribute(avatarFor(owner))}" alt="" />
+        <div class="post-owner"><strong>${escapeHTML(owner.fullname || owner.username || "Creator")}</strong><small>${escapeHTML(owner.username ? `@${owner.username}` : "")} · ${relativeDate(post.createdAt)}</small></div>
+        ${own ? `<button class="more-button" type="button" data-action="delete-post" data-post-id="${escapeAttribute(post._id)}" aria-label="Delete post">🗑</button>` : ""}
+      </header>
+      <img class="post-image" src="${escapeAttribute(post.image)}" alt="${escapeAttribute(post.caption || "Post image")}" loading="lazy" />
+      <div class="post-actions">
+        <button class="post-like${post.liked ? " liked" : ""}" type="button" data-action="post-like" data-post-id="${escapeAttribute(post._id)}"><span>${post.liked ? "♥" : "♡"}</span> ${post.likesCount ?? 0}</button>
+        <button class="text-button" type="button" data-action="post-comments" data-post-id="${escapeAttribute(post._id)}" data-open="false">💬 ${post.commentsCount ?? 0} comments</button>
+      </div>
+      ${post.caption ? `<p class="post-caption">${escapeHTML(post.caption)}</p>` : ""}
+      <div class="post-comments" hidden></div>`;
+    list.appendChild(card);
+  }
+}
+
+async function togglePostComments(button) {
+  const card = button.closest(".post-card");
+  const panel = card?.querySelector(".post-comments");
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; button.dataset.open = "false"; return; }
+  panel.hidden = false;
+  button.dataset.open = "true";
+  panel.innerHTML = `<div class="page-loading"><span class="spinner"></span></div>`;
+  try {
+    const comments = await request(`/posts/${encodeURIComponent(button.dataset.postId)}/comments`);
+    const list = Array.isArray(comments) ? comments : [];
+    panel.innerHTML = `${state.user ? `<form class="comment-form post-comment-form"><img src="${escapeAttribute(avatarFor(state.user))}" alt="" /><div><textarea name="content" required maxlength="1000" placeholder="Add a comment…"></textarea><div class="comment-submit-row"><button class="submit-comment" type="submit">Comment</button></div></div></form>` : ""}<div class="post-comments-list">${renderPostComments(list)}</div>`;
+  } catch (error) {
+    panel.innerHTML = `<p class="posts-empty">${escapeHTML(error.message || "Could not load comments.")}</p>`;
+  }
+}
+
+async function handleCreatePost(form) {
+  const image = form.elements.image?.files?.[0];
+  if (!image) return toast("Choose an image first.", "error");
+  const button = form.querySelector("button[type=submit]");
+  button.disabled = true;
+  try {
+    await request("/posts", { method: "POST", body: new FormData(form) });
+    form.reset();
+    setModal("post-modal", false);
+    toast("Post created!");
+    renderPosts();
+  } catch (error) {
+    toast(error.message || "Could not create post.", "error");
+  } finally { button.disabled = false; }
+}
+
+async function deletePost(postId) {
+  if (!confirm("Delete this post permanently? Its comments and likes will also be removed.")) return;
+  try {
+    await request(`/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
+    toast("Post deleted.");
+    renderPosts();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function togglePostLike(postId, button) {
+  if (!requireAuth()) return;
+  try {
+    const response = await request(`/posts/${encodeURIComponent(postId)}/like`, { method: "POST" });
+    button.classList.toggle("liked", response.liked);
+    button.querySelector("span").textContent = response.liked ? "♥" : "♡";
+    button.childNodes[1].textContent = ` ${response.likesCount}`;
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function postComment(form) {
+  const card = form.closest(".post-card");
+  const postId = card?.dataset.postId;
+  const content = new FormData(form).get("content")?.trim();
+  if (!postId || !content) return;
+  try {
+    await request(`/posts/${encodeURIComponent(postId)}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) });
+    const comments = await request(`/posts/${encodeURIComponent(postId)}/comments`);
+    const listEl = card.querySelector(".post-comments-list");
+    if (listEl) listEl.innerHTML = renderPostComments(comments);
+    form.reset();
+    const counter = card.querySelector("[data-action=post-comments]");
+    if (counter) counter.textContent = `💬 ${comments.length} comments`;
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function deletePostComment(commentId) {
+  if (!confirm("Delete this comment?")) return;
+  try {
+    await request(`/posts/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" });
+    const commentEl = main.querySelector(`.post-card [data-comment-id="${commentId}"]`);
+    const card = commentEl?.closest(".post-card");
+    commentEl?.remove();
+    if (card) {
+      const remaining = card.querySelectorAll(".post-comments-list [data-comment-id]").length;
+      const counter = card.querySelector("[data-action=post-comments]");
+      if (counter) counter.textContent = `💬 ${remaining} comments`;
+    }
+    toast("Comment deleted.");
+  } catch (error) { toast(error.message, "error"); }
+}
+
 async function navigate() {
   const raw = decodeURIComponent(location.hash.slice(1) || "home");
   const [route, ...parts] = raw.split("/");
@@ -413,6 +614,7 @@ async function navigate() {
   if (route === "history") return renderHistory();
   if (route === "playlists") return renderPlaylists();
   if (route === "shorts") return renderShorts();
+  if (route === "posts") return renderPosts();
   return renderHome();
 }
 
@@ -441,6 +643,7 @@ async function handleLogin(form) {
     state.user = data.user;
     localStorage.setItem("streamly_access_token", state.token);
     localStorage.setItem("streamly_user", JSON.stringify(state.user));
+    resetCreatorForms(); // never carry the previous account's draft into this session
     updateIdentityUI();
     setModal("auth-modal", false);
     setModal("register-modal", false);
@@ -481,7 +684,7 @@ async function handleRegister(form) {
     form.reset();
     setModal("register-modal", false);
     setModal("auth-modal", false);
-    toast(`Welcome to Streamly, ${state.user.fullname || state.user.username}!`);
+    toast(`Welcome to NovaPlay, ${state.user.fullname || state.user.username}!`);
     goto("home");
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; button.innerHTML = "Create account <span>→</span>"; }
@@ -536,6 +739,7 @@ async function handleLogout() {
     state.afterLogin = null;
     localStorage.removeItem("streamly_access_token");
     localStorage.removeItem("streamly_user");
+    resetCreatorForms(); // wipe any draft so the next account starts clean
     setModal("channel-modal", false);
     setModal("auth-modal", false);
     setModal("register-modal", false);
@@ -655,11 +859,19 @@ function updateTheme() {
   const root = document.documentElement;
   const next = root.dataset.theme === "light" ? "dark" : "light";
   root.dataset.theme = next;
-  localStorage.setItem("streamly_theme", next);
+  localStorage.setItem("streamly_theme_v2", next);
 }
 
 function bindEvents() {
   document.addEventListener("click", (event) => {
+    const menuItem = event.target.closest("[data-menu-action]");
+    if (menuItem) {
+      closeVideoMenu();
+      if (menuItem.dataset.menuAction === "delete") deleteVideo(menuItem.dataset.videoId);
+      else goto(`watch/${menuItem.dataset.videoId}`);
+      return;
+    }
+    if (!event.target.closest("#video-menu")) closeVideoMenu();
     const channel = event.target.closest(".channel-link");
     if (channel?.dataset.channel) { goto(`channel/${encodeURIComponent(channel.dataset.channel)}`); return; }
     const videoThumb = event.target.closest(".video-thumb");
@@ -678,18 +890,25 @@ function bindEvents() {
     if (action === "open-register") { setModal("auth-modal", false); setAuthTab("register"); return; }
     if (action === "open-channel") { if (requireAuth()) { $("#channel-form [name=fullname]").value = state.user?.fullname || ""; $("#channel-form [name=email]").value = state.user?.email || ""; setModal("channel-modal", true); } return; }
     if (action === "logout") { handleLogout(); return; }
-    if (action === "open-upload") { if (requireAuth()) setModal("upload-modal", true); return; }
-    if (action === "open-playlist") { if (requireAuth()) setModal("playlist-modal", true); return; }
+    if (action === "open-upload") { if (requireAuth()) { resetCreatorForms(); setModal("upload-modal", true); } return; }
+    if (action === "open-playlist") { if (requireAuth()) { resetCreatorForms(); setModal("playlist-modal", true); } return; }
+    if (action === "open-post-composer") { if (requireAuth()) { resetCreatorForms(); setModal("post-modal", true); } return; }
+    if (action === "post-like") { togglePostLike(button.dataset.postId, button); return; }
+    if (action === "post-comments") { togglePostComments(button); return; }
+    if (action === "delete-post") { deletePost(button.dataset.postId); return; }
+    if (action === "delete-post-comment") { deletePostComment(button.dataset.commentId); return; }
     if (action === "toggle-theme") { updateTheme(); return; }
     if (action === "toggle-sidebar") { document.body.classList.toggle("sidebar-collapsed"); return; }
     if (action === "open-account") { state.user ? setModal("channel-modal", true) : setModal("auth-modal", true); return; }
-    if (action === "mobile-search") { const value = window.prompt("Search Streamly"); if (value?.trim()) goto(`search/${encodeURIComponent(value.trim())}`); return; }
+    if (action === "mobile-search") { const value = window.prompt("Search NovaPlay"); if (value?.trim()) goto(`search/${encodeURIComponent(value.trim())}`); return; }
     if (action === "explore-featured") { state.activeCategory = "Design"; renderHome(); return; }
     if (action === "reset-search") { state.activeCategory = "All"; goto("home"); return; }
     if (action === "like") { toggleLike(button.dataset.videoId, button); return; }
     if (action === "subscribe") { toggleSubscription(button.dataset.channelId, button); return; }
     if (action === "save-video") { saveVideo(button.dataset.videoId); return; }
     if (action === "share-video") { shareVideo(button.dataset.videoId); return; }
+    if (action === "video-menu") { openVideoMenu(button); return; }
+    if (action === "delete-video") { deleteVideo(button.dataset.videoId); return; }
     if (action === "go-playlists") { goto("playlists"); return; }
     if (action === "go-history") { goto("history"); return; }
     if (action === "home") { goto("home"); }
@@ -702,6 +921,8 @@ function bindEvents() {
     if (event.target.id === "channel-form") { event.preventDefault(); handleChannel(event.target); return; }
     if (event.target.id === "upload-form") { event.preventDefault(); handleUpload(event.target); return; }
     if (event.target.id === "playlist-form") { event.preventDefault(); handlePlaylist(event.target); return; }
+    if (event.target.id === "post-form") { event.preventDefault(); handleCreatePost(event.target); return; }
+    if (event.target.classList?.contains("post-comment-form")) { event.preventDefault(); postComment(event.target); return; }
     if (event.target.id === "comment-form") { event.preventDefault(); handleComment(event.target); }
   });
 
@@ -721,7 +942,8 @@ async function restoreSession() {
 }
 
 async function boot() {
-  document.documentElement.dataset.theme = localStorage.getItem("streamly_theme") || "dark";
+  // Light buttery theme is the new default (v2 key ignores the old dark choice).
+  document.documentElement.dataset.theme = localStorage.getItem("streamly_theme_v2") || "light";
   bindEvents();
   await restoreSession();
   updateIdentityUI();
