@@ -89,4 +89,8 @@ app.use((error, req, res, next) => {
     })
 })
 
-export {app} 
+export { app };
+// Vercel's runtime occasionally resolves an entry path back to this module —
+// a valid default export here keeps those invocations from crashing with
+// "Invalid export found in module /var/task/src/app.js".
+export default app; 

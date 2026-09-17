@@ -41,7 +41,12 @@ const registerUser = asyncHandler(async (req, res) => {
   //check for user creation
   //retun responsem
 
-  const { fullname, email, username, password } = req.body;
+  // Frontend posts "fullname"; accept "fullName" too so API clients can't
+  // fail on casing.
+  const { fullname, email, username, password } = {
+    ...req.body,
+    fullname: req.body?.fullname ?? req.body?.fullName,
+  };
   console.log("email:", email);
 
   if ([fullname, email, username, password].some((field) => !field?.trim())) {
