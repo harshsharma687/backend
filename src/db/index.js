@@ -13,7 +13,9 @@ const connectToDatabase = async () => {
   // Retry a few times with backoff — on hosting platforms the first DNS/SRV
   // lookup right after a cold start can transiently fail (the querySrv
   // ECONNREFUSED we saw locally). One bad lookup should not kill the deploy.
-  const maxAttempts = 5;
+  // Keep the total window short on serverless (invocation timeouts).
+  const isServerless = Boolean(process.env.VERCEL);
+  const maxAttempts = isServerless ? 2 : 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const connectionInstance = await mongoose.connect(
@@ -35,7 +37,7 @@ const connectToDatabase = async () => {
         // entry (api/index.js) catches the thrown error and answers 503 instead.
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+      await new Promise((resolve) => setTimeout(resolve, isServerless ? 500 : attempt * 2000));
     }
   }
 };
