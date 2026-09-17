@@ -22,6 +22,13 @@ Ye project **ek hi server** mein sab kuch serve karta hai: frontend (`public/`) 
 
 Alternatives for heavy video: **Render / Railway** (normal Node server, `npm start`) — koi timeout nahi.
 
+## Do URL confusion se bacho (common galti)
+
+Vercel pe **har import alag project** hota hai. Agar aapne kabhi dobara import kiya to purana project uska purana broken deployment hi serve karta rehta hai (jaise `backend-pi-hazel.vercel.app` "temporarily unavailable" deta tha). Hamesha **latest project ka URL** use karo (Vercel dashboard me jo project GitHub repo se linked hai, uska `*-projects.vercel.app` ya `*-git-main-*.vercel.app` URL).
+
+**Deployment Protection band karo** (warna site sirf aapko dikhegi, duniya ko nahi):
+Project → Settings → Deployment Protection → **Disabled**. Iske bina har visitor ko Vercel login wall (SSO 302) milega.
+
 ## Quick deploy (Render / Railway / Fly / Koyeb)
 
 1. GitHub pe push karo
