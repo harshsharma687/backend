@@ -1,12 +1,13 @@
-// Vercel serverless entry point. Vercel imports this default handler for the
-// /api/* routes (see vercel.json rewrites) and passes each request through the
-// full Express app — routes, auth, uploads, static assets, everything.
-import { app } from "../src/app.js";
-import connectToDatabase from "../src/db/index.js";
+// Vercel serverless entry point. Everything is loaded lazily inside the
+// handler and every failure mode returns readable JSON — an opaque
+// FUNCTION_INVOCATION_FAILED tells us nothing, but a JSON error with the real
+// message and stack pinpoints the problem instantly from any browser.
+//
+// env check  -> { error: "ENV_MISSING", ... }
+// import err -> { error: "INIT_FAILED", message + stack }
+// db fail    -> { error: "DB_UNREACHABLE", ... }
+// route err  -> { error: "HANDLER_FAILED", message + stack }
 
-// Fail fast with a readable JSON message instead of a cryptic
-// FUNCTION_INVOCATION_FAILED when environment variables are missing on a
-// fresh deployment.
 const REQUIRED_ENV = [
   "MONGODB_URI",
   "ACCESS_TOKEN_SECRET",
@@ -16,30 +17,57 @@ const REQUIRED_ENV = [
   "CLOUDINARY_API_SECRET",
 ];
 
-// On the local Node server (src/index.js) connectToDatabase() runs before
-// listen(). Serverless has no such startup step, so every invocation ensures
-// the connection itself. Mongoose caches the connection, so this is a cheap
-// no-op once warm.
-let ready = null;
-const ensureDatabase = () => (ready ??= connectToDatabase());
+let cached = null;
+
+async function loadApp() {
+  if (cached) return cached;
+  const [{ app }, { default: connectToDatabase }] = await Promise.all([
+    import("../src/app.js"),
+    import("../src/db/index.js"),
+  ]);
+  cached = { app, connectToDatabase };
+  return cached;
+}
 
 export default async function handler(req, res) {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
   if (missing.length) {
     return res.status(500).json({
-      success: false,
-      message: `Server misconfigured: missing environment variables: ${missing.join(", ")}. Set them in Vercel → Settings → Environment Variables, then redeploy.`,
+      error: "ENV_MISSING",
+      message: `Set these in Vercel → Settings → Environment Variables, then redeploy: ${missing.join(", ")}`,
+    });
+  }
+
+  let app;
+  let connectToDatabase;
+  try {
+    ({ app, connectToDatabase } = await loadApp());
+  } catch (error) {
+    return res.status(500).json({
+      error: "INIT_FAILED",
+      message: error?.message || String(error),
+      stack: (error?.stack || "").split("\n").slice(0, 12),
     });
   }
 
   try {
-    await ensureDatabase();
+    await connectToDatabase();
   } catch (error) {
-    console.error("Database unavailable:", error?.message || error);
     return res.status(503).json({
-      success: false,
-      message: "Database is not reachable. Check MONGODB_URI and the Atlas IP allowlist (0.0.0.0/0).",
+      error: "DB_UNREACHABLE",
+      message: error?.message || String(error),
+      hint: "Check MONGODB_URI and the Atlas Network Access allowlist (0.0.0.0/0).",
     });
   }
-  return app(req, res);
+
+  try {
+    return await app(req, res);
+  } catch (error) {
+    return res.status(500).json({
+      error: "HANDLER_FAILED",
+      path: req.url,
+      message: error?.message || String(error),
+      stack: (error?.stack || "").split("\n").slice(0, 12),
+    });
+  }
 }

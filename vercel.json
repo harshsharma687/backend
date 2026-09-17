@@ -10,6 +10,7 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/healthz", "destination": "/api/index" },
+    { "source": "/ping", "destination": "/api/ping" },
     { "source": "/(.*)", "destination": "/api/index" }
   ]
 }
