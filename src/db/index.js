@@ -31,7 +31,9 @@ const connectToDatabase = async () => {
       );
       if (attempt === maxAttempts) {
         console.error("Giving up — check MONGODB_URI / network / Atlas IP allowlist (0.0.0.0/0 for dynamic hosts).");
-        process.exit(1);
+        // The plain server (src/index.js) exits on failure; the Vercel serverless
+        // entry (api/index.js) catches the thrown error and answers 503 instead.
+        throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
     }
