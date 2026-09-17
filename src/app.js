@@ -2,8 +2,14 @@ import express from "express"
 import cors from "cors"
 import cookieparser from "cookie-parser"
 import multer from "multer"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 const app = express()
+
+// Absolute path to public/ so static assets work everywhere — locally, on
+// Vercel serverless (where cwd-relative "public" breaks), or on any host.
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public")
 
 // Behind proxies/load balancers (Render, Railway, Fly, Heroku, Nginx...) the
 // app must trust X-Forwarded-* so req.protocol/secure cookies work correctly.
@@ -34,7 +40,7 @@ app.use(cors({
 
 app.use(express.json({limit: "20kb"}))
 app.use(express.urlencoded({extended : true , limit: "16kb"}))
-app.use(express.static("public"))
+app.use(express.static(PUBLIC_DIR))
 
 // Health check for uptime monitors & hosting platforms
 app.get("/healthz", (_, res) => res.status(200).json({ status: "ok" }))
