@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.*
+!.env.example
+server.log
+*.log
+public/temp
+test-assets
+.git

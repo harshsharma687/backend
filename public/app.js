@@ -1,4 +1,14 @@
-const API_HOST = window.location.port === "8000" ? window.location.origin : "http://localhost:8000";
+// Smart API host that covers every way the site is opened:
+// - opened from the app server itself (localhost:8000 or the deployed domain)
+//   → same-origin API.
+// - opened from VS Code Live Server / another dev port, or straight from disk
+//   (file://) → fall back to the API server on http://localhost:8000 (this is
+//   what caused "Request failed (405)" — dev servers reject POST).
+// - split deployments → set window.API_HOST in index.html.
+const localHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0"]);
+const isFileProtocol = window.location.protocol === "file:";
+const isLocalDevPort = localHostnames.has(window.location.hostname) && window.location.port !== "8000";
+const API_HOST = window.API_HOST || (isFileProtocol || isLocalDevPort ? "http://localhost:8000" : window.location.origin);
 const API = `${API_HOST}/api/v1`;
 const main = document.querySelector("#app-main");
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -84,12 +94,42 @@ function normaliseVideo(video = {}) {
   };
 }
 
+let refreshingPromise = null;
+
+// Access tokens expire after 1 day. When that happens the server answers 401;
+// silently exchange the refresh-token cookie for a fresh pair and retry once,
+// so people are not logged out every day.
+async function refreshSession() {
+  if (!refreshingPromise) {
+    refreshingPromise = request("/users/refresh-token", { method: "POST" })
+      .then((data) => {
+        if (data?.accessToken) {
+          state.token = data.accessToken;
+          localStorage.setItem("streamly_access_token", state.token);
+        }
+      })
+      .finally(() => { refreshingPromise = null; });
+  }
+  return refreshingPromise;
+}
+
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   const response = await fetch(`${API}${path}`, { credentials: "include", ...options, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
+    // Expired session? Try one silent refresh + retry (never for the login or
+    // refresh calls themselves — that would loop).
+    const isAuthCall = path.startsWith("/users/login") || path.startsWith("/users/refresh-token");
+    if (response.status === 401 && !isAuthCall && state.token) {
+      try {
+        await refreshSession();
+        return await request(path, options);
+      } catch {
+        // refresh failed — fall through to the normal error below
+      }
+    }
     const error = new Error(payload.message || `Request failed (${response.status})`);
     error.status = response.status;
     throw error;

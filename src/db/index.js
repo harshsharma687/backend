@@ -10,16 +10,31 @@ import dns from "dns";
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const connectToDatabase = async () => {
-  try {
-    const connectionInstance = await mongoose.connect(
-      `${process.env.MONGODB_URI}/${DB_NAME}`
-    );
-    console.log(
-      `Connected to MongoDB successfully !! ${connectionInstance.connection.host}`
-    );
-  } catch (error) {
-    console.log("Error connecting to MongoDB:", error);
-    process.exit(1);
+  // Retry a few times with backoff — on hosting platforms the first DNS/SRV
+  // lookup right after a cold start can transiently fail (the querySrv
+  // ECONNREFUSED we saw locally). One bad lookup should not kill the deploy.
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const connectionInstance = await mongoose.connect(
+        `${process.env.MONGODB_URI}/${DB_NAME}`,
+        { serverSelectionTimeoutMS: 15_000 }
+      );
+      console.log(
+        `Connected to MongoDB successfully !! ${connectionInstance.connection.host}`
+      );
+      return;
+    } catch (error) {
+      console.error(
+        `MongoDB connection attempt ${attempt}/${maxAttempts} failed:`,
+        error?.message || error
+      );
+      if (attempt === maxAttempts) {
+        console.error("Giving up — check MONGODB_URI / network / Atlas IP allowlist (0.0.0.0/0 for dynamic hosts).");
+        process.exit(1);
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+    }
   }
 };
 

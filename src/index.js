@@ -16,6 +16,27 @@ const PORT =
     ? parsedPort
     : 8000;
 
+// Fail fast: if any required env var is missing, print WHICH ones and stop —
+// much better than a deployed server that runs but breaks on first upload/login.
+const REQUIRED_ENV = [
+  "MONGODB_URI",
+  "ACCESS_TOKEN_SECRET",
+  "REFRESH_TOKEN_SECRET",
+  "CLOUDINARY_CLOUD_NAME",
+  "CLOUDINARY_API_KEY",
+  "CLOUDINARY_API_SECRET",
+];
+const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+if (missing.length) {
+  console.error(`Server cannot start — missing environment variables: ${missing.join(", ")}`);
+  console.error("Set them in your .env file (local) or hosting dashboard (production).");
+  process.exit(1);
+}
+
+if (process.env.NODE_ENV === "production" && !process.env.CORS_ORIGIN) {
+  console.warn("Warning: NODE_ENV=production without CORS_ORIGIN — cross-origin frontends will be blocked by CORS.");
+}
+
 // Import app modules AFTER env is loaded.
 const [{ app }, { default: connectToDatabase }] = await Promise.all([
   import("./app.js"),

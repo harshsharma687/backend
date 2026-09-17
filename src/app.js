@@ -5,9 +5,29 @@ import multer from "multer"
 
 const app = express()
 
+// Behind proxies/load balancers (Render, Railway, Fly, Heroku, Nginx...) the
+// app must trust X-Forwarded-* so req.protocol/secure cookies work correctly.
+app.set("trust proxy", 1)
+
+// Deployment-safe CORS. Same-origin requests carry no Origin header and always
+// pass. CORS_ORIGIN controls cross-origin calls:
+//   "*"  → allow every origin (fine for dev/learning; cookies still work because
+//          we echo the request origin instead of a literal *)
+//   "a,b" → allow-list, e.g. "https://novaplay.vercel.app,http://localhost:5173"
+//   empty → same-origin only
+const allowedOrigins = String(process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean)
+const allowAllOrigins = allowedOrigins.includes("*")
+
 app.use(cors({
     origin: (requestOrigin, callback) => {
-        callback(null, requestOrigin || "http://localhost:8000");
+        if (!requestOrigin) return callback(null, true); // same-origin / curl / mobile app
+        if (allowAllOrigins || allowedOrigins.includes(requestOrigin)) {
+            return callback(null, true);
+        }
+        return callback(null, false); // don't throw — just don't emit CORS headers
     },
     credentials: true,
 }))
@@ -15,6 +35,9 @@ app.use(cors({
 app.use(express.json({limit: "20kb"}))
 app.use(express.urlencoded({extended : true , limit: "16kb"}))
 app.use(express.static("public"))
+
+// Health check for uptime monitors & hosting platforms
+app.get("/healthz", (_, res) => res.status(200).json({ status: "ok" }))
 app.use(cookieparser())
 
 
