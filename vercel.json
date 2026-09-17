@@ -9,12 +9,10 @@
   },
   "headers": [
     {
-      "source": "/styles.css",
-      "cache-control": "public, max-age=3600"
-    },
-    {
-      "source": "/app.js",
-      "cache-control": "public, max-age=3600"
+      "source": "/(app\\.js|styles\\.css)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
     }
   ]
 }
