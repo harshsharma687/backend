@@ -30,7 +30,11 @@ const getPlaylist = asyncHandler(async (req, res) => {
   const playlist = await Playlist.findOne({
     _id: req.params.playlistId,
     owner: req.user._id,
-  }).populate("video", "title thumbnail duration");
+  }).populate({
+    path: "video",
+    select: "title thumbnail duration owner views createdAt",
+    populate: { path: "owner", select: "username fullname avatar" },
+  });
 
   if (!playlist) throw new ApiError(404, "Playlist not found");
   return res.status(200).json(new ApiResponse(200, playlist, "Playlist fetched"));

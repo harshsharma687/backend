@@ -6,6 +6,7 @@ import {
   updateVideo,
   deleteVideo,
   togglePublishStatus,
+  getUploadSignature,
 } from "../controllers/video.controller.js";
 import { upload } from "../middlewares/multer.middlewares.js";
 import { optionalJWT, verifyJWT } from "../middlewares/auth.middleware.js";
@@ -22,6 +23,9 @@ router.route("/")
     ]),
     publishAVideo
   );
+
+// Must be declared before "/:videoId" so Express doesn't treat it as an id.
+router.route("/upload-signature").get(verifyJWT, getUploadSignature);
 
 router.route("/:videoId")
   .get(optionalJWT, getVideoById)

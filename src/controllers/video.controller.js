@@ -72,6 +72,36 @@ const getAllVideos = asyncHandler(async (req, res) => {
 });
 
 const publishAVideo = asyncHandler(async (req, res) => {
+  // Direct-upload path: the browser uploads the video/thumbnail to Cloudinary
+  // itself (signed upload) and sends us the resulting URLs as JSON. Serverless
+  // platforms cap request bodies at a few MB, which is what made uploads fail
+  // with 413 in production — this path never streams media through the server.
+  // The multipart path below keeps working for API clients that post files.
+  const jsonVideoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
+  const jsonThumbUrl = typeof req.body?.thumbnailUrl === "string" ? req.body.thumbnailUrl.trim() : "";
+  if (jsonVideoUrl && jsonThumbUrl) {
+    const isCloudinaryUrl = (value) => /^https:\/\/res\.cloudinary\.com\/[\w-]+\//.test(value);
+    if (!isCloudinaryUrl(jsonVideoUrl) || !isCloudinaryUrl(jsonThumbUrl)) {
+      throw new ApiError(400, "Upload URLs must be Cloudinary URLs");
+    }
+    const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+    if (!title) throw new ApiError(400, "Title is required");
+    const requestedDuration = Number(req.body.duration);
+    const video = await Video.create({
+      videofile: jsonVideoUrl,
+      thumbnail: jsonThumbUrl,
+      title,
+      description: typeof req.body.description === "string" ? req.body.description.trim() : "",
+      duration:
+        Number.isFinite(requestedDuration) && requestedDuration > 0
+          ? Math.round(requestedDuration)
+          : 1,
+      owner: req.user._id,
+    });
+    const populatedVideo = await video.populate("owner", ownerFields);
+    return res.status(201).json(new ApiResponse(201, populatedVideo, "Video published"));
+  }
+
   const { title, description } = req.body;
   const videoFilePath = req.files?.videoFile?.[0]?.path;
   const thumbnailPath = req.files?.thumbnail?.[0]?.path;
@@ -210,6 +240,30 @@ const togglePublishStatus = asyncHandler(async (req, res) => {
   return res.status(200).json(new ApiResponse(200, video, "Publish status updated"));
 });
 
+// Signs a direct-to-Cloudinary upload for the signed-in creator. Only the
+// derived signature is returned — the API secret never leaves the server.
+const getUploadSignature = asyncHandler(async (req, res) => {
+  const timestamp = Math.round(Date.now() / 1000);
+  const folder = "novaplay";
+  const signature = cloudinary.utils.api_sign_request(
+    { timestamp, folder },
+    process.env.CLOUDINARY_API_SECRET
+  );
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        timestamp,
+        signature,
+        folder,
+        apiKey: process.env.CLOUDINARY_API_KEY,
+        cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      },
+      "Upload signature generated"
+    )
+  );
+});
+
 export {
   getAllVideos,
   publishAVideo,
@@ -217,4 +271,5 @@ export {
   updateVideo,
   deleteVideo,
   togglePublishStatus,
+  getUploadSignature,
 };
