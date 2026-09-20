@@ -1,4 +1,6 @@
 import { Like } from "../models/like.model.js";
+import { Video } from "../models/video.model.js";
+import { mongoose } from "mongoose";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
@@ -35,4 +37,44 @@ const getLikeCount = asyncHandler(async (req, res) => {
   return res.status(200).json(new ApiResponse(200, { count }, "Like count fetched"));
 });
 
-export { toggleLike, getLikeCount };
+// Read-only list of the signed-in user's liked videos (newest like first).
+// Used by the mobile You page; purely additive — existing like routes untouched.
+const getLikedVideos = asyncHandler(async (req, res) => {
+  const likes = await Like.aggregate([
+    { $match: { likedBy: new mongoose.Types.ObjectId(req.user._id), video: { $ne: null } } },
+    { $sort: { createdAt: -1 } },
+    {
+      $lookup: {
+        from: "videos",
+        localField: "video",
+        foreignField: "_id",
+        as: "video",
+      },
+    },
+    { $unwind: "$video" },
+    { $match: { "video.isPublished": true } },
+    {
+      $lookup: {
+        from: "users",
+        localField: "video.owner",
+        foreignField: "_id",
+        as: "video.owner",
+      },
+    },
+    {
+      $addFields: {
+        "video.owner": { $first: "$video.owner" },
+      },
+    },
+    { $replaceRoot: { newRoot: "$video" } },
+    {
+      $project: {
+        videofile: 0,
+      },
+    },
+  ]);
+
+  return res.status(200).json(new ApiResponse(200, likes, "Liked videos fetched"));
+});
+
+export { toggleLike, getLikeCount, getLikedVideos };

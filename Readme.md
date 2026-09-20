@@ -19,7 +19,7 @@ The frontend is served from `public/`, so no separate frontend server is require
 
 ## Included product flows
 
-- Home feed with search, filters, responsive navigation, light/dark theme and empty states
+- Home feed with search, filters, mobile-first responsive navigation, bottom tab bar and empty states
 - Video upload to Cloudinary, publishing, editing, deleting and public/private status toggling
 - Watch page with player, view count, comments, likes, sharing and playlist saving
 - Register, login, session restoration and profile/channel views

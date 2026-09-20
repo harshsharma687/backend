@@ -47,9 +47,8 @@ const registerUser = asyncHandler(async (req, res) => {
     ...req.body,
     fullname: req.body?.fullname ?? req.body?.fullName,
   };
-  console.log("email:", email);
-
-  if ([fullname, email, username, password].some((field) => !field?.trim())) {
+  // No PII in server logs.
+  if (!fullname || !email || !username || !password) {
     throw new ApiError(400, "All fields are required");
   }
 
@@ -118,31 +117,32 @@ const registerUser = asyncHandler(async (req, res) => {
 });
 
 const loginUser = asyncHandler(async (req, res) => {
-  // req bodyn - data
-  // username or email
-  // find the user
-  //password check
-  //access and refresh token
-  //send coookie
-
-  const { email, username, password } = req.body;
+  const body = req.body || {};
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : undefined;
+  const username = typeof body.username === "string" ? body.username.trim().toLowerCase() : undefined;
+  const password = body.password;
 
   if ((!username && !email) || !password) {
-    throw new ApiError(400, "username or email and password are required");
+    throw new ApiError(400, "Username or email and password are required");
   }
 
-  const user = await User.findOne({
-    $or: [{ username }, { email }],
-  });
+  // Email/username are stored lowercased — the lookup must be too, or valid
+  // credentials fail with "user not found" (this made login flaky).
+  const identityFilter = [];
+  if (username) identityFilter.push({ username });
+  if (email) identityFilter.push({ email });
+  const user = await User.findOne({ $or: identityFilter });
 
+  // Same message for unknown user and wrong password so the endpoint does
+  // not reveal which accounts exist.
   if (!user) {
-    throw new ApiError(404, "user not found");
+    throw new ApiError(401, "Incorrect email/username or password");
   }
 
   const isPasswordvalid = await user.isPasswordCorrect(password);
 
   if (!isPasswordvalid) {
-    throw new ApiError(401, "password Incorrect");
+    throw new ApiError(401, "Incorrect email/username or password");
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
@@ -179,8 +179,8 @@ const logoutUser = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .clearCookie("accessToken")
-    .clearCookie("refreshToken")
+    .clearCookie("accessToken", authCookieOptions)
+    .clearCookie("refreshToken", authCookieOptions)
     .json(new ApiResponse(200, {}, "User logged out successfully"));
 });
 
@@ -252,7 +252,10 @@ const getCurrentUser = asyncHandler(async (req, res) => {
 });
 
 const updateAccountDetails = asyncHandler(async (req, res) => {
-  const { fullname, email } = req.body;
+  const fullname = typeof req.body?.fullname === "string" ? req.body.fullname.trim() : "";
+  // Lowercase here: findByIdAndUpdate can bypass schema setters, and mixed-case
+  // emails would then never match the login lookup.
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
 
   if (!fullname || !email) {
     throw new ApiError(400, "all fields are required");
@@ -266,7 +269,7 @@ const updateAccountDetails = asyncHandler(async (req, res) => {
         email,
       },
     },
-    { new: true }
+    { new: true, runValidators: true }
   ).select("-password");
 
   return res

@@ -96,36 +96,71 @@ function normaliseVideo(video = {}) {
 
 let refreshingPromise = null;
 
-// Access tokens expire after 1 day. When that happens the server answers 401;
-// silently exchange the refresh-token cookie for a fresh pair and retry once,
-// so people are not logged out every day.
-async function refreshSession() {
-  if (!refreshingPromise) {
-    refreshingPromise = request("/users/refresh-token", { method: "POST" })
-      .then((data) => {
-        if (data?.accessToken) {
-          state.token = data.accessToken;
-          localStorage.setItem("streamly_access_token", state.token);
-        }
-      })
-      .finally(() => { refreshingPromise = null; });
-  }
-  return refreshingPromise;
+// ---------- Shared button spinner (real request state, no fake timers) ----------
+const SPINNER_SVG = `<svg class="button-spinner spinner-spin" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/></svg>`;
+
+// Swap a button into its loading state and return a restore() function that
+// always runs (success or failure), so a button can never stay stuck.
+function setButtonLoading(button, label, { icon = null } = {}) {
+  if (!button) return () => {};
+  if (button.dataset.busy === "1") return () => {}; // duplicate-submit guard
+  button.dataset.busy = "1";
+  button.disabled = true;
+  const original = button.innerHTML;
+  button.innerHTML = `${icon ? `<span aria-hidden="true">${icon}</span>` : ""}${SPINNER_SVG}<span class="button-spinner-label">${escapeHTML(label)}</span>`;
+  return () => {
+    button.dataset.busy = "";
+    button.disabled = false;
+    button.innerHTML = original;
+  };
 }
 
+function formatBytes(bytes) {
+  const size = Number(bytes) || 0;
+  if (size >= 1024 ** 3) return `${(size / 1024 ** 3).toFixed(1)} GB`;
+  if (size >= 1024 ** 2) return `${(size / 1024 ** 2).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+// fetch() has no timeout; without one a hung connection leaves spinners
+// spinning forever. AbortError surfaces as a friendly network error.
+// Identical in-flight GETs are collapsed to one network request (double render
+// guards, mini-subscriptions etc. previously fired true duplicate calls).
+const inflightGets = new Map();
 async function request(path, options = {}) {
-  const headers = new Headers(options.headers || {});
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 30000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // `dedupe: false` opts out (e.g. volatile per-user lists); otherwise identical
+  // in-flight GETs share one network request.
+  const shared = !options.method && options.dedupe !== false && !inflightGets.has(path);
+  if (shared) {
+    inflightGets.set(
+      path,
+      requestOnce(path, options, controller.signal).finally(() => inflightGets.delete(path))
+    );
+  }
+  try {
+    return shared ? await inflightGets.get(path) : await requestOnce(path, options, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestOnce(path, options = {}, signal) {
+  // Strip app-only option keys so fetch never sees an invalid RequestInit.
+  const { timeoutMs, dedupe, ...fetchOptions } = options;
+  const headers = new Headers(fetchOptions.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-  const response = await fetch(`${API}${path}`, { credentials: "include", ...options, headers });
+  const response = await fetch(`${API}${path}`, { credentials: "include", signal, ...fetchOptions, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
-    // Expired session? Try one silent refresh + retry (never for the login or
-    // refresh calls themselves — that would loop).
     const isAuthCall = path.startsWith("/users/login") || path.startsWith("/users/refresh-token");
     if (response.status === 401 && !isAuthCall && state.token) {
       try {
         await refreshSession();
-        return await request(path, options);
+        return await requestOnce(path, options, signal);
       } catch {
         // refresh failed — fall through to the normal error below
       }
@@ -135,6 +170,52 @@ async function request(path, options = {}) {
     throw error;
   }
   return payload.data;
+}
+
+// XHR-based request for uploads: fetch cannot report progress. Reports real
+// bytes-on-the-wire percentage; no fake numbers.
+function uploadWithProgress(path, { method = "POST", body, onProgress, timeoutMs = 0 } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, `${API}${path}`);
+    if (state.token) xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+    xhr.withCredentials = true;
+    if (timeoutMs) xhr.timeout = timeoutMs;
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      let payload = {};
+      try { payload = JSON.parse(xhr.responseText || "{}"); } catch { /* non-JSON error body */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload.success !== false) return resolve(payload.data);
+      const error = new Error(payload.message || `Upload failed (${xhr.status})`);
+      error.status = xhr.status;
+      reject(error);
+    };
+    xhr.onerror = () => reject(new Error("Network error while uploading. Check your connection and try again."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Try again, or use a smaller file."));
+    xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.send(body);
+  });
+}
+
+// Access tokens expire after 1 day. When that happens the server answers 401;
+// silently exchange the refresh-token cookie for a fresh pair and retry once,
+// so people are not logged out every day.
+async function refreshSession() {
+  if (!refreshingPromise) {
+    refreshingPromise = request("/users/refresh-token", { method: "POST", timeoutMs: 15000 })
+      .then((data) => {
+        if (data?.accessToken) {
+          state.token = data.accessToken;
+          localStorage.setItem("streamly_access_token", state.token);
+        }
+      })
+      .finally(() => { refreshingPromise = null; });
+  }
+  return refreshingPromise;
 }
 
 function toast(message, kind = "success") {
@@ -187,6 +268,12 @@ function setLoading(message = "Loading…") {
   main.innerHTML = `<div class="page-loading"><span class="spinner"></span><p>${escapeHTML(message)}</p></div>`;
 }
 
+// Cream-themed shimmering skeletons for page shells — the layout paints
+// instantly while data loads, so the app never sits on a blank screen.
+function skeletonGrid(count = 12) {
+  return Array.from({ length: count }, () => `<div class="video-card skeleton-card"><div class="skeleton-thumb shimmer"></div><div class="video-meta"><div class="skeleton-avatar shimmer"></div><div><div class="skeleton-line shimmer"></div><div class="skeleton-line short shimmer"></div></div></div></div>`).join("");
+}
+
 function setModal(id, open) {
   const modal = document.getElementById(id);
   if (!modal) return;
@@ -201,18 +288,201 @@ function setModal(id, open) {
 function resetCreatorForms() {
   $("#upload-form")?.reset();
   $("#playlist-form")?.reset();
+  resetUploadPreviews();
+}
+
+// ---------- Upload: file selection preview + real progress ----------
+
+function resetUploadPreviews() {
+  const videoPreviewBox = $("#video-file-preview");
+  const videoPlayer = $("#video-preview-player");
+  const thumbPreview = $("#thumbnail-preview");
+  const progress = $("#upload-progress");
+  if (videoPlayer?.dataset.objectUrl) URL.revokeObjectURL(videoPlayer.dataset.objectUrl);
+  if (thumbPreview?.dataset.objectUrl) URL.revokeObjectURL(thumbPreview.dataset.objectUrl);
+  if (videoPreviewBox) videoPreviewBox.hidden = true;
+  if (thumbPreview) { thumbPreview.hidden = true; thumbPreview.removeAttribute("src"); }
+  if (progress) progress.hidden = true;
+  const fill = $("#upload-progress-fill");
+  if (fill) fill.style.width = "0%";
+  const percent = $("#upload-progress-percent");
+  if (percent) percent.textContent = "0%";
+}
+
+function showVideoFilePreview(file) {
+  const box = $("#video-file-preview");
+  const name = $("#video-file-name");
+  const size = $("#video-file-size");
+  const player = $("#video-preview-player");
+  if (!box || !player) return;
+  if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
+  const url = URL.createObjectURL(file);
+  player.dataset.objectUrl = url;
+  player.src = url;
+  if (name) name.textContent = file.name;
+  if (size) size.textContent = formatBytes(file.size);
+  box.hidden = false;
+}
+
+function showThumbnailPreview(file) {
+  const preview = $("#thumbnail-preview");
+  if (!preview) return;
+  if (preview.dataset.objectUrl) URL.revokeObjectURL(preview.dataset.objectUrl);
+  const url = URL.createObjectURL(file);
+  preview.dataset.objectUrl = url;
+  preview.src = url;
+  preview.hidden = false;
+}
+
+function bindUploadForm() {
+  const form = $("#upload-form");
+  if (!form) return;
+  const videoInput = form.elements.videoFile;
+  const thumbInput = form.elements.thumbnail;
+
+  videoInput?.addEventListener("change", () => {
+    const file = videoInput.files?.[0];
+    resetUploadPreviews();
+    if (!file) return;
+    if (!file.type.startsWith("video/")) {
+      videoInput.value = "";
+      toast("That file is not a video. Choose an MP4, WebM or MOV file.", "error");
+      return;
+    }
+    if (file.size > 500 * 1024 * 1024) {
+      videoInput.value = "";
+      toast(`Video is ${formatBytes(file.size)} — the limit is 500 MB.`, "error");
+      return;
+    }
+    showVideoFilePreview(file);
+  });
+
+  thumbInput?.addEventListener("change", () => {
+    const file = thumbInput.files?.[0];
+    if (thumbInput.parentElement instanceof HTMLElement) thumbInput.parentElement.hidden = Boolean(file);
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      thumbInput.value = "";
+      toast("Thumbnails must be an image (JPG or PNG).", "error");
+      return;
+    }
+    showThumbnailPreview(file);
+  });
+
+  form.addEventListener("reset", () => resetUploadPreviews());
+}
+
+async function handleUpload(form) {
+  if (!requireAuth()) return;
+  const button = $("#upload-submit");
+  if (button?.dataset.busy === "1") return; // duplicate upload guard
+  const status = $("#upload-status");
+  const footerStatus = $("#upload-status-footer");
+  const setStatus = (message) => {
+    if (status) { status.hidden = !message; status.textContent = message; }
+    if (footerStatus) { footerStatus.hidden = !message; footerStatus.textContent = message; }
+  };
+  const videoFile = form.elements.videoFile?.files?.[0];
+  const thumbnail = form.elements.thumbnail?.files?.[0];
+  const title = String(form.elements.title?.value || "").trim();
+  const description = String(form.elements.description?.value || "").trim();
+  if (!videoFile || !thumbnail) {
+    toast("Select both a video file and a thumbnail.", "error");
+    return;
+  }
+  if (!title) {
+    toast("Give your video a title before publishing.", "error");
+    return;
+  }
+  if (videoFile.size > 500 * 1024 * 1024) {
+    toast("Video must be smaller than 500 MB.", "error");
+    return;
+  }
+
+  const restore = setButtonLoading(button, "Publishing...", { icon: "↑" });
+  const progressBox = $("#upload-progress");
+  const fill = $("#upload-progress-fill");
+  const percentLabel = $("#upload-progress-percent");
+  if (progressBox) progressBox.hidden = false;
+  setStatus("Uploading your video… You can keep this window open.");
+
+  const body = new FormData();
+  body.append("videoFile", videoFile, videoFile.name);
+  body.append("thumbnail", thumbnail, thumbnail.name);
+  body.append("title", title);
+  if (description) body.append("description", description);
+
+  try {
+    // XHR gives real bytes-sent progress; fetch cannot.
+    const video = await uploadWithProgress("/videos", {
+      body,
+      onProgress: (percent) => {
+        if (fill) fill.style.width = `${percent}%`;
+        if (percentLabel) percentLabel.textContent = `${percent}%`;
+        if (percent >= 100) setStatus("Processing on the server — almost done…");
+      },
+    });
+    if (fill) fill.style.width = "100%";
+    if (percentLabel) percentLabel.textContent = "100%";
+    form.reset();
+    resetUploadPreviews();
+    setModal("upload-modal", false);
+    toast("Your video is live!");
+    goto(`watch/${video._id}`);
+  } catch (error) {
+    if (progressBox) progressBox.hidden = true;
+    setStatus(`Upload failed: ${error.message}`);
+    toast(error.message || "Upload failed. Please try again.", "error");
+    // Give the user a one-tap retry instead of refilling the form.
+    if (button && button.dataset.busy !== "1") { /* restore() already ran */ }
+    window.__retryUpload = () => {
+      delete window.__retryUpload;
+      setStatus("");
+      handleUpload(form);
+    };
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "outline-button wide";
+    retry.textContent = "Retry upload";
+    retry.addEventListener("click", () => window.__retryUpload?.());
+    footerStatus?.after(retry);
+    setTimeout(() => retry.remove(), 15000);
+  } finally {
+    restore();
+  }
 }
 
 function requireAuth(afterLogin) {
   if (state.user && state.token) return true;
-  if (afterLogin) state.afterLogin = afterLogin;
+  if (afterLogin) {
+    state.afterLogin = afterLogin;
+    // Remember the intended destination so login can return the user there
+    // (used by goto after a successful login).
+    const intended = location.hash.replace(/^#/, "");
+    if (intended && intended !== "home") state.afterLoginRoute = intended;
+  }
   setAuthTab("login");
   setModal("auth-modal", true);
   toast("Please sign in to continue.", "error");
   return false;
 }
 
+// The You tab in the bottom bar shows the user's avatar like YouTube's account
+// tab; a static glyph is the fallback for guests and small screens.
+function updateYouTab() {
+  const avatar = $("#you-tab-avatar");
+  if (!avatar) return;
+  if (state.user?.avatar) {
+    avatar.src = state.user.avatar;
+    avatar.alt = "Your account";
+  } else {
+    avatar.removeAttribute("src");
+    avatar.alt = "";
+  }
+}
+
 function updateIdentityUI() {
+  updateYouTab();
   const avatar = $("#nav-avatar");
   const initial = $("#nav-initials");
   const signedIn = Boolean(state.user);
@@ -230,13 +500,19 @@ function updateIdentityUI() {
   if (signedIn) loadMiniSubscriptions();
 }
 
+let miniSubscriptionsPromise = null;
 async function loadMiniSubscriptions() {
   if (!state.user) return;
-  try {
-    const subscriptions = await request("/subscriptions/user");
-    const list = $("#subscription-list");
-    list.innerHTML = subscriptions.slice(0, 5).map(({ channel }) => channel ? `<a class="subscription-mini-item" href="#channel/${encodeURIComponent(channel.username)}"><img src="${escapeAttribute(avatarFor(channel))}" alt="" /><span>${escapeHTML(channel.fullname || channel.username)}</span></a>` : "").join("");
-  } catch { /* The main app stays usable when subscriptions are not available yet. */ }
+  // One subscription lookup per login/refresh, no matter how many callers.
+  if (!miniSubscriptionsPromise) {
+    miniSubscriptionsPromise = request("/subscriptions/user", { dedupe: false })
+      .catch(() => [])
+      .finally(() => { miniSubscriptionsPromise = null; });
+  }
+  const subscriptions = await miniSubscriptionsPromise;
+  const list = $("#subscription-list");
+  if (!list) return;
+  list.innerHTML = subscriptions.slice(0, 5).map(({ channel }) => channel ? `<a class="subscription-mini-item" href="#channel/${encodeURIComponent(channel.username)}"><img src="${escapeAttribute(avatarFor(channel))}" alt="" /><span>${escapeHTML(channel.fullname || channel.username)}</span></a>` : "").join("");
 }
 
 function setAuthTab(tab) {
@@ -259,6 +535,8 @@ function createVideoCard(video) {
   card.dataset.videoId = item._id;
   thumbImage.src = item.thumbnail;
   thumbImage.alt = "";
+  thumbImage.loading = "lazy";
+  thumbImage.decoding = "async";
   thumbImage.onerror = () => { thumbImage.src = demoVideos[0].thumbnail; };
   avatar.src = avatarFor(item.owner);
   avatar.alt = "";
@@ -310,13 +588,32 @@ async function getVideos(query = "") {
 
 async function renderHome({ query = "" } = {}) {
   const renderId = ++state.renderId;
-  setLoading(query ? `Searching for “${query}”…` : "Loading your feed…");
+  if (!query) {
+    // Instant shell: categories and copy paint immediately; only the grid area
+    // shows a loading placeholder while the feed request is in flight.
+    main.innerHTML = `
+    <section class="page-head">
+      <div><h1>Good evening, explore something new.</h1><p>Fresh stories, ideas and skills from your community.</p></div>
+      <button class="outline-button" type="button" data-action="open-upload">Upload video</button>
+    </section>
+    <section class="hero" style="--hero-image:url('https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&w=1500&q=85')"><div class="hero-content"><span class="eyebrow">Featured collection</span><h1>Small stories. Big ideas.</h1><p>Thoughtful videos from creators making their own corner of the internet a little more interesting.</p><button class="primary-button" type="button" data-action="explore-featured">Explore the collection <span>→</span></button></div></section>
+    <div class="chips" aria-label="Video topics">${["All", "Tech", "Travel", "Design", "Food", "Productivity", "Photography"].map((category) => `<button class="chip ${category === state.activeCategory ? "active" : ""}" type="button" data-category="${category}">${category}</button>`).join("")}</div>
+    <section><div class="video-grid">${skeletonGrid(12)}</div></section>`;
+  } else {
+    setLoading(`Searching for “${query}”…`);
+  }
   const videos = await getVideos(query);
   if (renderId !== state.renderId) return;
   state.videos = videos;
   const categories = ["All", "Tech", "Travel", "Design", "Food", "Productivity", "Photography"];
   const selected = state.activeCategory;
   const filtered = selected === "All" ? videos : videos.filter((video) => video.category === selected || video.title.toLowerCase().includes(selected.toLowerCase()));
+  const grid = $(".video-grid", main);
+  if (grid) {
+    renderVideoGrid(filtered, grid);
+    return;
+  }
+  // Search results (or any path that skipped the shell) render the full page.
   main.innerHTML = `
     <section class="page-head">
       <div><h1>${query ? `Results for “${escapeHTML(query)}”` : "Good evening, explore something new."}</h1><p>${state.usingDemoData ? "A preview feed is shown until you publish your first video." : "Fresh stories, ideas and skills from your community."}</p></div>
@@ -355,6 +652,12 @@ function commentMarkup(comment) {
 
 async function renderWatch(videoId) {
   const renderId = ++state.renderId;
+  // An empty id (e.g. a stale "#watch" link) must show the unavailable state,
+  // not a garbage player — the server answers GET /videos/ with the whole list.
+  if (!videoId) {
+    main.innerHTML = `<div class="empty-state"><span class="empty-icon">!</span><h2>That video is unavailable</h2><p>It may have been removed, made private, or the link is incorrect.</p><a href="#home" class="primary-button">Back to home</a></div>`;
+    return;
+  }
   setLoading("Loading video…");
   let video;
   try {
@@ -397,11 +700,14 @@ async function renderWatch(videoId) {
 async function renderChannel(username) {
   const renderId = ++state.renderId;
   setLoading("Loading channel…");
+  // Independent requests run in parallel (channel profile + its videos).
   let channel;
   let videos = [];
   try {
-    channel = await request(`/users/c/${encodeURIComponent(username)}`);
-    videos = await getVideosForOwner(channel._id);
+    [channel, videos] = await Promise.all([
+      request(`/users/c/${encodeURIComponent(username)}`),
+      getVideosForOwnerByName(username),
+    ]);
   } catch {
     const owner = demoOwners.find((item) => item.username === username) || demoOwners[0];
     channel = { ...owner, subscribersCount: Math.floor(Math.random() * 90 + 10) * 1000, channelsSubscribedToCount: 12, coverImage: "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1500&q=80" };
@@ -433,6 +739,17 @@ async function getVideosForOwner(ownerId) {
   }
 }
 
+// Channel pages know the username, not the id — resolve videos without
+// waiting for the profile request first.
+async function getVideosForOwnerByName(username) {
+  try {
+    const data = await request(`/videos?${new URLSearchParams({ username, limit: "36" })}`);
+    return (data.videos || data.docs || data || []).map(normaliseVideo);
+  } catch {
+    return demoVideos.filter((video) => video.owner.username === username);
+  }
+}
+
 function libraryEmpty(title, description, action = "open-login", label = "Sign in") {
   main.innerHTML = `<section class="page-head"><div><h1>${escapeHTML(title)}</h1><p>${escapeHTML(description)}</p></div></section><div class="empty-state"><span class="empty-icon">▤</span><h2>${escapeHTML(title)}</h2><p>${escapeHTML(description)}</p><button class="primary-button" type="button" data-action="${action}">${escapeHTML(label)}</button></div>`;
 }
@@ -455,9 +772,12 @@ async function renderSubscriptions() {
   setLoading("Loading subscriptions…");
   try {
     const subscriptions = await request("/subscriptions/user");
-    const result = await Promise.all(subscriptions.filter((item) => item.channel?._id).map((item) => getVideosForOwner(item.channel._id)));
+    // One request for every subscribed channel's videos (owner IDs joined in
+    // the query) instead of one request per channel.
+    const ownerIds = subscriptions.map((item) => item.channel?._id).filter(Boolean).map(String);
+    const data = ownerIds.length ? await request(`/videos?${new URLSearchParams({ userIds: ownerIds.join(","), limit: "36" })}`) : { videos: [] };
     if (renderId !== state.renderId) return;
-    const videos = result.flat();
+    const videos = (data.videos || data.docs || data || []).map(normaliseVideo);
     main.innerHTML = `<section class="page-head"><div><h1>Subscriptions</h1><p>The newest videos from channels you follow.</p></div></section>${subscriptions.length ? `<div class="chips">${subscriptions.map(({ channel }) => channel ? `<a class="chip" href="#channel/${encodeURIComponent(channel.username)}">${escapeHTML(channel.fullname || channel.username)}</a>` : "").join("")}</div><div class="video-grid"></div>` : `<div class="empty-state"><span class="empty-icon">＋</span><h2>Your feed is ready for creators</h2><p>Subscribe to channels you love and their latest uploads will appear here.</p><a class="primary-button" href="#home">Discover channels</a></div>`}`;
     if (subscriptions.length) renderVideoGrid(videos);
   } catch (error) { libraryEmpty("Subscriptions", error.message, "home", "Discover channels"); }
@@ -485,21 +805,140 @@ async function renderLibrary() {
       getVideosForOwner(state.user._id),
     ]);
     if (renderId !== state.renderId) return;
-      main.innerHTML = `<section class="page-head"><div><h1>Your library</h1><p>A home for everything you want to watch and make.</p></div><div class="page-actions"><button class="outline-button" type="button" data-action="open-channel">Create channel</button><button class="primary-button" type="button" data-action="open-upload">＋ Upload</button></div></section><section class="library-summary"><article class="stat-card"><b>${history.length}</b><span>Videos watched</span></article><article class="stat-card"><b>${playlists.length}</b><span>Playlists</span></article><article class="stat-card"><b>${state.user.username ? "@" + escapeHTML(state.user.username) : "You"}</b><span>Your channel</span></article></section><section class="section-heading"><h2>Your playlists</h2><button class="text-button" type="button" data-action="go-playlists">View all</button></section><div class="playlist-grid">${playlists.slice(0, 3).map((playlist) => `<article class="playlist-card"><div class="playlist-cover"><span class="playlist-count">${playlist.video?.length || 0} videos</span></div><div class="playlist-card-body"><h3>${escapeHTML(playlist.name)}</h3><p>${escapeHTML(playlist.description)}</p></div></article>`).join("") || `<div class="empty-state" style="min-height:auto"><p>Start collecting videos that matter to you.</p><button class="outline-button" type="button" data-action="open-playlist">New playlist</button></div>`}</div><section class="section-heading"><h2>Watch history</h2><button class="text-button" type="button" data-action="go-history">View history</button></section><div class="video-grid" id="history-grid"></div>`;
+      const username = state.user.username;
+      main.innerHTML = `<section class="page-head"><div><h1>Library</h1><p>Everything you make and save, in one place.</p></div><div class="page-actions"><button class="primary-button" type="button" data-action="open-upload">＋ Upload</button></div></section><section class="library-summary"><article class="stat-card"><b>${history.length}</b><span>Videos watched</span></article><article class="stat-card"><b>${playlists.length}</b><span>Playlists</span></article><article class="stat-card"><b>${state.user.username ? "@" + escapeHTML(state.user.username) : "You"}</b><span>Your channel</span></article></section><section class="section-heading"><h2>Your playlists</h2><button class="text-button" type="button" data-action="go-playlists">View all</button></section><div class="playlist-grid">${playlists.slice(0, 3).map((playlist) => `<article class="playlist-card"><div class="playlist-cover"><span class="playlist-count">${playlist.video?.length || 0} videos</span></div><div class="playlist-card-body"><h3>${escapeHTML(playlist.name)}</h3><p>${escapeHTML(playlist.description)}</p></div></article>`).join("") || `<div class="empty-state" style="min-height:auto"><p>Start collecting videos that matter to you.</p><button class="outline-button" type="button" data-action="open-playlist">New playlist</button></div>`}</div><section class="section-heading"><h2>Watch history</h2><button class="text-button" type="button" data-action="go-history">View history</button></section><div class="video-grid" id="history-grid"></div><section class="section-heading library-uploads-heading" id="library-uploads-heading"><h2>Your uploads</h2><a class="text-button" href="#channel/${encodeURIComponent(username || "")}">View channel</a></section><div class="video-grid" id="library-uploads"></div>`;
       renderVideoGrid(history.slice(0, 4), $("#history-grid"));
-    const uploadsHeading = document.createElement("section");
-    uploadsHeading.className = "section-heading library-uploads-heading";
-    uploadsHeading.innerHTML = `<h2>Your uploads</h2><a class="text-button" href="#channel/${encodeURIComponent(state.user.username)}">View channel</a>`;
-    const uploadsGrid = document.createElement("div");
-    uploadsGrid.className = "video-grid";
-    main.append(uploadsHeading, uploadsGrid);
-    renderVideoGrid(uploads, uploadsGrid);
+    renderVideoGrid(uploads, $("#library-uploads"));
   } catch (error) { libraryEmpty("Your library", error.message, "home", "Explore videos"); }
 }
 
+// ---------- You / Account page (mobile-first, YouTube-style) ----------
+
+function youRow(icon, label, attrs = "") {
+  // Rows with an href must be real anchors — buttons ignore href, so a tap
+  // would otherwise do nothing. Action rows stay buttons, the rest are static.
+  const isLink = attrs.includes("href=");
+  const tag = isLink ? "a" : attrs.includes("data-action=") ? "button" : "div";
+  const typeAttribute = tag === "button" ? ' type="button"' : "";
+  return `<${tag} class="you-row"${typeAttribute} ${attrs}><span class="you-row-icon">${icon}</span><span class="you-row-label">${escapeHTML(label)}</span><span class="you-row-chevron">›</span></${tag}>`;
+}
+
+async function renderYou() {
+  // Guests see a friendly sign-in prompt instead of the account page.
+  if (!requireAuth(() => renderYou())) return;
+  const user = state.user;
+  const username = user?.username;
+  main.innerHTML = `
+    <section class="page-head you-head"><div><h1>You</h1></div></section>
+    <section class="you-account glass">
+      <a class="you-account-row" href="#channel/${escapeAttribute(username || "")}">
+        <img class="you-account-avatar" src="${escapeAttribute(avatarFor(user))}" alt="" />
+        <div class="you-account-info"><strong>${escapeHTML(user.fullname || user.username || "Your account")}</strong><small>@${escapeHTML(username || "you")} · View your channel</small></div>
+        <span class="you-row-chevron">›</span>
+      </a>
+    </section>
+    <section class="you-group">
+      ${youRow("＋", "Create channel", 'data-action="open-channel"')}
+      ${youRow("▶", "My channel", `href="#channel/${escapeAttribute(username || "")}"`)}
+      ${youRow("❏", "My posts", 'href="#my-posts"')}
+      ${youRow("▤", "Library", 'href="#library"')}
+    </section>
+    <section class="you-group">
+      ${youRow("◷", "Watch history", 'href="#history"')}
+      ${youRow("≡", "Playlists", 'href="#playlists"')}
+      ${youRow("♥", "Liked videos", 'href="#liked"')}
+    </section>
+    <section class="you-group">
+      ${youRow("⚙", "Password change", 'data-action="open-settings"')}
+    </section>
+    <section class="you-group">
+      <button class="you-row you-row-danger" type="button" data-action="logout"><span class="you-row-icon">⏻</span><span class="you-row-label">Log out</span></button>
+    </section>`;
+}
+
+// "My posts" — the signed-in user's own posts only. Reuses the existing
+// GET /posts API (no new backend endpoint) and filters client-side.
+async function renderMyPosts() {
+  if (!requireAuth(() => renderMyPosts())) return;
+  const renderId = ++state.renderId;
+  setLoading("Loading your posts…");
+  try {
+    const posts = (await request(`/posts?owner=me`, { dedupe: false })).map((post) => ({ ...post, owner: post.owner || state.user }));
+    if (renderId !== state.renderId) return;
+    main.innerHTML = `<section class="page-head"><div><h1>My posts</h1><p>Only your own image posts, newest first.</p></div>${'<button class="primary-button" type="button" data-action="open-post-composer"><span>＋</span> New post</button>'}</section><div class="posts-list" id="posts-list"></div>`;
+    const list = main.querySelector("#posts-list");
+    if (!posts.length) {
+      list.innerHTML = `<div class="empty-state"><span class="empty-icon">❏</span><h2>You have not posted yet</h2><p>Share a moment with an image and an optional caption.</p><button class="primary-button" type="button" data-action="open-post-composer">Create your first post</button></div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const post of posts) {
+      const card = document.createElement("article");
+      card.className = "post-card";
+      card.dataset.postId = post._id;
+      card.innerHTML = `
+      <header class="post-head">
+        <img class="channel-avatar" src="${escapeAttribute(avatarFor(post.owner || state.user))}" alt="" />
+        <div class="post-owner"><strong>${escapeHTML(state.user.fullname || state.user.username || "You")}</strong><small>${escapeHTML(state.user.username ? `@${state.user.username}` : "")} · ${relativeDate(post.createdAt)}</small></div>
+        <button class="more-button" type="button" data-action="delete-post" data-post-id="${escapeAttribute(post._id)}" aria-label="Delete post">🗑</button>
+      </header>
+      <img class="post-image" src="${escapeAttribute(post.image)}" alt="${escapeAttribute(post.caption || "Post image")}" loading="lazy" />
+      <div class="post-actions">
+        <button class="post-like${post.liked ? " liked" : ""}" type="button" data-action="post-like" data-post-id="${escapeAttribute(post._id)}"><span>${post.liked ? "♥" : "♡"}</span> ${post.likesCount ?? 0}</button>
+        <button class="text-button" type="button" data-action="post-comments" data-post-id="${escapeAttribute(post._id)}" data-open="false">💬 ${post.commentsCount ?? 0} comments</button>
+      </div>
+      ${post.caption ? `<p class="post-caption">${escapeHTML(post.caption)}</p>` : ""}
+      <div class="post-comments" hidden></div>`;
+      list.appendChild(card);
+    }
+  } catch (error) { libraryEmpty("My posts", error.message, "home", "Explore videos"); }
+}
+
+async function renderLikedVideos() {
+  if (!requireAuth(() => renderLikedVideos())) return;
+  const renderId = ++state.renderId;
+  setLoading("Loading liked videos…");
+  try {
+    const videos = (await request("/likes/videos")).map(normaliseVideo);
+    if (renderId !== state.renderId) return;
+    main.innerHTML = `<section class="page-head"><div><h1>Liked videos</h1><p>Everything you gave a ♥, newest first.</p></div></section>${videos.length ? '<div class="video-grid"></div>' : '<div class="empty-state"><span class="empty-icon">♥</span><h2>No liked videos yet</h2><p>Tap the like button on any video and it will appear here.</p><a class="primary-button" href="#home">Explore videos</a></div>'}`;
+    if (videos.length) renderVideoGrid(videos);
+  } catch (error) { libraryEmpty("Liked videos", error.message, "home", "Explore videos"); }
+}
+
+async function handleSettings(form) {
+  const button = $("button[type=submit]", form);
+  const status = $("#settings-status");
+  const data = new FormData(form);
+  const newPassword = String(data.get("newPassword") || "");
+  if (newPassword.length < 6) {
+    status.hidden = false;
+    status.textContent = "New password must be at least 6 characters.";
+    return;
+  }
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Updating your password…";
+  try {
+    await request("/users/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oldPassword: data.get("oldPassword"), newPassword }),
+    });
+    form.reset();
+    status.hidden = true;
+    setModal("settings-modal", false);
+    toast("Password updated successfully.");
+  } catch (error) {
+    status.textContent = error.message;
+    toast(error.message, "error");
+  } finally { button.disabled = false; }
+}
+
 async function renderShorts() {
+  if (!state.videos.length) setLoading("Loading shorts…");
   const videos = state.videos.length ? state.videos : await getVideos();
-  main.innerHTML = `<section class="page-head"><div><h1>Shorts</h1><p>Quick ideas worth a pause.</p></div></section><div class="video-grid"></div>`;
+  if (!main.querySelector(".video-grid")) main.innerHTML = `<section class="page-head"><div><h1>Shorts</h1><p>Quick ideas worth a pause.</p></div></section><div class="video-grid"></div>`;
   renderVideoGrid(videos.filter((video) => Number(video.duration) < 900));
 }
 
@@ -585,7 +1024,7 @@ async function handleCreatePost(form) {
     form.reset();
     setModal("post-modal", false);
     toast("Post created!");
-    renderPosts();
+    if (location.hash === "#my-posts") renderMyPosts(); else renderPosts();
   } catch (error) {
     toast(error.message || "Could not create post.", "error");
   } finally { button.disabled = false; }
@@ -596,7 +1035,7 @@ async function deletePost(postId) {
   try {
     await request(`/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
     toast("Post deleted.");
-    renderPosts();
+    if (location.hash === "#my-posts") renderMyPosts(); else renderPosts();
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -650,6 +1089,9 @@ async function navigate() {
   if (route === "channel") return renderChannel(parts.join("/"));
   if (route === "search") return renderHome({ query: parts.join("/") });
   if (route === "subscriptions") return renderSubscriptions();
+  if (route === "you") return renderYou();
+  if (route === "liked") return renderLikedVideos();
+  if (route === "my-posts") return renderMyPosts();
   if (route === "library") return renderLibrary();
   if (route === "history") return renderHistory();
   if (route === "playlists") return renderPlaylists();
@@ -669,13 +1111,14 @@ async function handleLogin(form) {
     return;
   }
 
+  const button = $("button[type=submit]", form);
+  if (button?.dataset.busy === "1") return; // ignore double-clicks
   const body = { password };
   if (identity.includes("@")) body.email = identity; else body.username = identity;
-  const button = $("button[type=submit]", form);
-  button.disabled = true; button.textContent = "Signing in…";
+  const restore = setButtonLoading(button, "Logging in...", { icon: "" });
   try {
     state.token = "";
-    const data = await request("/users/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await request("/users/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), timeoutMs: 20000 });
     if (!data?.accessToken || !data?.user) {
       throw new Error("Login response was incomplete. Please try again.");
     }
@@ -688,18 +1131,21 @@ async function handleLogin(form) {
     setModal("auth-modal", false);
     setModal("register-modal", false);
     setModal("channel-modal", false);
-    toast(`Welcome back, ${state.user.fullname || state.user.username}!`);
     state.afterLogin = null;
-    goto("home");
+    toast(`Welcome back, ${state.user.fullname || state.user.username}!`);
+    goto(state.afterLoginRoute || "home");
+    state.afterLoginRoute = null;
   } catch (error) {
-    toast(error.message || "Login failed. Check your credentials.", "error");
+    // Specific, friendly reasons instead of a generic failure message.
+    toast(error.status === 401 ? "Incorrect email/username or password." : error.message || "Login failed. Check your connection and try again.", "error");
   }
-  finally { button.disabled = false; button.innerHTML = "Sign in <span>→</span>"; }
+  finally { restore(); }
 }
 
 async function handleRegister(form) {
   const button = $("button[type=submit]", form);
-  button.disabled = true; button.textContent = "Creating account…";
+  if (button?.dataset.busy === "1") return;
+  const restore = setButtonLoading(button, "Creating account...", { icon: "" });
   try {
     const formData = new FormData(form);
     const identity = String(formData.get("email") || formData.get("username") || "").trim();
@@ -727,7 +1173,7 @@ async function handleRegister(form) {
     toast(`Welcome to NovaPlay, ${state.user.fullname || state.user.username}!`);
     goto("home");
   } catch (error) { toast(error.message, "error"); }
-  finally { button.disabled = false; button.innerHTML = "Create account <span>→</span>"; }
+  finally { restore(); }
 }
 
 async function handleChannel(form) {
@@ -787,33 +1233,6 @@ async function handleLogout() {
     toast("You have been logged out.");
     goto("home");
   }
-}
-
-async function handleUpload(form) {
-  if (!requireAuth()) return;
-  const button = $("button[type=submit]", form);
-  const status = $("#upload-status");
-  const videoFile = form.elements.videoFile?.files?.[0];
-  const thumbnail = form.elements.thumbnail?.files?.[0];
-  if (!videoFile || !thumbnail) {
-    toast("Select both a video file and a thumbnail.", "error");
-    return;
-  }
-  const sizeMB = (videoFile.size / (1024 * 1024)).toFixed(1);
-  if (videoFile.size > 500 * 1024 * 1024) {
-    toast("Video must be smaller than 500 MB.", "error");
-    return;
-  }
-  button.disabled = true; status.hidden = false; status.textContent = "Uploading your video. Keep this window open…";
-  status.textContent = `Uploading ${videoFile.name} (${sizeMB} MB)…`;
-  try {
-    const video = await request("/videos", { method: "POST", body: new FormData(form) });
-    form.reset();
-    setModal("upload-modal", false);
-    toast("Your video is live!");
-    goto(`watch/${video._id}`);
-  } catch (error) { status.textContent = error.message; toast(error.message, "error"); }
-  finally { button.disabled = false; button.innerHTML = "Publish video <span>↑</span>"; }
 }
 
 async function handleComment(form) {
@@ -895,14 +1314,8 @@ async function shareVideo(videoId) {
   catch { toast("Copy this link: " + url); }
 }
 
-function updateTheme() {
-  const root = document.documentElement;
-  const next = root.dataset.theme === "light" ? "dark" : "light";
-  root.dataset.theme = next;
-  localStorage.setItem("streamly_theme_v2", next);
-}
-
 function bindEvents() {
+  bindUploadForm();
   document.addEventListener("click", (event) => {
     const menuItem = event.target.closest("[data-menu-action]");
     if (menuItem) {
@@ -926,6 +1339,12 @@ function bindEvents() {
     if (!button) return;
     const action = button.dataset.action;
     if (action === "close-modal") { button.closest("dialog")?.close(); return; }
+    if (action === "remove-video-file") {
+      const form = $("#upload-form");
+      if (form?.elements.videoFile) form.elements.videoFile.value = "";
+      resetUploadPreviews();
+      return;
+    }
     if (action === "open-login") { setModal("register-modal", false); setAuthTab("login"); return; }
     if (action === "open-register") { setModal("auth-modal", false); setAuthTab("register"); return; }
     if (action === "open-channel") { if (requireAuth()) { $("#channel-form [name=fullname]").value = state.user?.fullname || ""; $("#channel-form [name=email]").value = state.user?.email || ""; setModal("channel-modal", true); } return; }
@@ -937,10 +1356,12 @@ function bindEvents() {
     if (action === "post-comments") { togglePostComments(button); return; }
     if (action === "delete-post") { deletePost(button.dataset.postId); return; }
     if (action === "delete-post-comment") { deletePostComment(button.dataset.commentId); return; }
-    if (action === "toggle-theme") { updateTheme(); return; }
     if (action === "toggle-sidebar") { document.body.classList.toggle("sidebar-collapsed"); return; }
-    if (action === "open-account") { state.user ? setModal("channel-modal", true) : setModal("auth-modal", true); return; }
-    if (action === "mobile-search") { const value = window.prompt("Search NovaPlay"); if (value?.trim()) goto(`search/${encodeURIComponent(value.trim())}`); return; }
+    if (action === "mobile-search") { $("#mobile-search-overlay")?.classList.add("open"); $("#mobile-search-input")?.focus(); return; }
+    if (action === "close-mobile-search") { $("#mobile-search-overlay")?.classList.remove("open"); return; }
+    if (action === "open-account") { state.user ? goto("you") : setModal("auth-modal", true); return; }
+    if (action === "open-settings") { setModal("settings-modal", true); return; }
+    if (action === "mobile-search-prompt") { const value = window.prompt("Search NovaPlay"); if (value?.trim()) goto(`search/${encodeURIComponent(value.trim())}`); return; }
     if (action === "explore-featured") { state.activeCategory = "Design"; renderHome(); return; }
     if (action === "reset-search") { state.activeCategory = "All"; goto("home"); return; }
     if (action === "like") { toggleLike(button.dataset.videoId, button); return; }
@@ -955,12 +1376,21 @@ function bindEvents() {
   });
 
   document.addEventListener("submit", (event) => {
-    if (event.target.id === "search-form") { event.preventDefault(); const query = new FormData(event.target).get("search") || $("#search-input").value; if (query.trim()) goto(`search/${encodeURIComponent(query.trim())}`); return; }
+    if (event.target.id === "search-form" || event.target.id === "mobile-search-form") {
+      event.preventDefault();
+      const query = new FormData(event.target).get("search") || $("input[type=search]", event.target).value;
+      if (query.trim()) {
+        $("#mobile-search-overlay")?.classList.remove("open");
+        goto(`search/${encodeURIComponent(query.trim())}`);
+      }
+      return;
+    }
     if (event.target.id === "login-form") { event.preventDefault(); handleLogin(event.target); return; }
     if (event.target.id === "register-form") { event.preventDefault(); handleRegister(event.target); return; }
     if (event.target.id === "channel-form") { event.preventDefault(); handleChannel(event.target); return; }
     if (event.target.id === "upload-form") { event.preventDefault(); handleUpload(event.target); return; }
     if (event.target.id === "playlist-form") { event.preventDefault(); handlePlaylist(event.target); return; }
+    if (event.target.id === "settings-form") { event.preventDefault(); handleSettings(event.target); return; }
     if (event.target.id === "post-form") { event.preventDefault(); handleCreatePost(event.target); return; }
     if (event.target.classList?.contains("post-comment-form")) { event.preventDefault(); postComment(event.target); return; }
     if (event.target.id === "comment-form") { event.preventDefault(); handleComment(event.target); }
@@ -972,21 +1402,31 @@ function bindEvents() {
 async function restoreSession() {
   if (!state.token) return;
   try {
-    state.user = await request("/users/current-user");
+    state.user = await request("/users/current-user", { timeoutMs: 12000 });
     localStorage.setItem("streamly_user", JSON.stringify(state.user));
-  } catch {
+  } catch (error) {
+    // Only a definitive 401 means the session is really dead. A network
+    // hiccup or slow server must not log the user out on every refresh.
+    if (error.status !== 401) return;
     state.token = ""; state.user = null;
     localStorage.removeItem("streamly_access_token");
     localStorage.removeItem("streamly_user");
   }
 }
 
-async function boot() {
-  // Light buttery theme is the new default (v2 key ignores the old dark choice).
-  document.documentElement.dataset.theme = localStorage.getItem("streamly_theme_v2") || "light";
+function boot() {
+  // Bright buttery light theme is the one and only theme.
+  document.documentElement.dataset.theme = "light";
   bindEvents();
-  await restoreSession();
-  updateIdentityUI();
+  // Session restore must not block the first paint: the app renders
+  // immediately; identity UI refreshes in the background once confirmed.
+  (async () => {
+    await restoreSession();
+    // Always refresh identity UI: a still-valid session keeps the same token,
+    // but cached user data (avatar, name) may have changed — and skip-guarded
+    // DOM updates make the always-call cheap for guests and fresh visits.
+    updateIdentityUI();
+  })();
   window.addEventListener("hashchange", navigate);
   navigate();
 }

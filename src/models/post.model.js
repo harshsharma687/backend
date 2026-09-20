@@ -30,4 +30,8 @@ const postSchema = new Schema(
   { timestamps: true }
 );
 
+// The feed sorts by recency; My posts filters by owner.
+postSchema.index({ createdAt: -1 });
+postSchema.index({ owner: 1, createdAt: -1 });
+
 export const Post = mongoose.model("Post", postSchema);

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Video } from "../models/video.model.js";
 import { User } from "../models/user.model.js";
 import { Comment } from "../models/comment.model.js";
@@ -26,7 +27,15 @@ const getAllVideos = asyncHandler(async (req, res) => {
   const sortDirection = req.query.sortType === "asc" ? 1 : -1;
 
   const filter = { isPublished: true };
-  if (owner) filter.owner = owner;
+  // Backwards-compatible params: `userId` still works; `userIds` accepts a
+  // comma-separated list (used by the subscriptions feed in one request), and
+  // `username` resolves a channel page without a preceding user lookup.
+  const ownerIds = [];
+  if (owner) ownerIds.push(...owner.split(",").map((id) => id.trim()).filter(Boolean));
+  if (req.query.userIds) ownerIds.push(...String(req.query.userIds).split(",").map((id) => id.trim()).filter(Boolean));
+  if (ownerIds.length === 1) filter.owner = ownerIds[0];
+  else if (ownerIds.length > 1) filter.owner = { $in: ownerIds };
+  if (req.query.username?.trim()) filter.owner = { $in: await User.find({ username: req.query.username.trim().toLowerCase() }).select("_id").lean() };
   if (query) {
     filter.$or = [
       { title: { $regex: query, $options: "i" } },
@@ -43,9 +52,17 @@ const getAllVideos = asyncHandler(async (req, res) => {
     Video.countDocuments(filter),
   ]);
 
+  // Trim heavy/unused fields: `videofile` is a huge CDN URL the grid never
+  // needs, and Mongoose bookkeeping (`__v`) is internal. `hasFile` lets the
+  // UI know a playable file exists without shipping the URL.
+  const payloadVideos = videos.map(({ _doc }) => {
+    const { videofile, __v, ...rest } = _doc;
+    return { ...rest, hasFile: Boolean(videofile) };
+  });
+
   return res.status(200).json(
     new ApiResponse(200, {
-      videos,
+      videos: payloadVideos,
       page,
       limit,
       total,
@@ -95,6 +112,11 @@ const publishAVideo = asyncHandler(async (req, res) => {
 });
 
 const getVideoById = asyncHandler(async (req, res) => {
+  // Malformed ids (stale links, "undefined") must 404, not crash as a 500
+  // CastError inside Mongo.
+  if (!mongoose.isValidObjectId(req.params.videoId)) {
+    throw new ApiError(404, "Video not found");
+  }
   const video = await Video.findOneAndUpdate(
     { _id: req.params.videoId, isPublished: true },
     { $inc: { views: 1 } },
@@ -103,15 +125,21 @@ const getVideoById = asyncHandler(async (req, res) => {
 
   if (!video) throw new ApiError(404, "Video not found");
 
+  // Watch-history bookkeeping must never delay playback: the response is sent
+  // immediately, the history update runs in the background (the catch keeps an
+  // update failure from becoming an unhandled rejection).
   if (req.user) {
-    const user = await User.findById(req.user._id);
-    if (user) {
-      user.watchHistory = [
-        video._id,
-        ...user.watchHistory.filter((id) => id.toString() !== video._id.toString()),
-      ].slice(0, 100);
-      await user.save({ validateBeforeSave: false });
-    }
+    User.findByIdAndUpdate(
+      req.user._id,
+      { $pull: { watchHistory: video._id } }
+    )
+      .then(() =>
+        User.findByIdAndUpdate(
+          req.user._id,
+          { $push: { watchHistory: { $each: [video._id], $position: 0, $slice: 100 } } }
+        )
+      )
+      .catch((error) => console.error("watch-history update failed:", error?.message || error));
   }
 
   return res.status(200).json(new ApiResponse(200, video, "Video fetched"));

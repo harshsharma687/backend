@@ -38,7 +38,10 @@ const createPost = asyncHandler(async (req, res) => {
 });
 
 const getPosts = asyncHandler(async (req, res) => {
-  const posts = await Post.find()
+  // ?owner=me narrows the feed to the signed-in user's own posts (the mobile
+  // "My posts" page). Optional additive param — the public feed is unchanged.
+  const filter = req.query.owner === "me" && req.user?._id ? { owner: req.user._id } : {};
+  const posts = await Post.find(filter)
     .populate("owner", "username fullname avatar")
     .sort({ createdAt: -1 });
 

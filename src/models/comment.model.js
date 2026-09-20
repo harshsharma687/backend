@@ -25,4 +25,8 @@ const commentSchema = new Schema(
 
 commentSchema.plugin(mongooseAggregatePaginate);
 
+// Comments are always listed per video/post, newest first.
+commentSchema.index({ video: 1, createdAt: -1 });
+commentSchema.index({ post: 1, createdAt: -1 });
+
 export const Comment = mongoose.model("Comment", commentSchema);
