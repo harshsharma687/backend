@@ -36,6 +36,25 @@ const uploadOnCloudinary = async (localFilePath) => {
   }
 };
 
+// Signs a direct browser→Cloudinary upload. Returns the params the client must
+// send along with the file. The API secret stays on the server — only the
+// derived signature travels to the browser.
+const createUploadSignature = () => {
+  const timestamp = Math.round(Date.now() / 1000);
+  const folder = "novaplay";
+  const signature = cloudinary.utils.api_sign_request(
+    { timestamp, folder },
+    process.env.CLOUDINARY_API_SECRET
+  );
+  return {
+    timestamp,
+    signature,
+    folder,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+  };
+};
+
 // Delete a Cloudinary asset given its full URL. Best-effort: failures are
 // logged but not thrown so callers (e.g. video delete) never break on them.
 const deleteFromCloudinary = async (fileUrl, resourceType = "image") => {
@@ -50,4 +69,4 @@ const deleteFromCloudinary = async (fileUrl, resourceType = "image") => {
   }
 };
 
-export { uploadOnCloudinary, deleteFromCloudinary };
+export { uploadOnCloudinary, deleteFromCloudinary, createUploadSignature };

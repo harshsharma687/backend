@@ -39,6 +39,7 @@ const state = {
   activeCategory: "All",
   activeVideo: null,
   pendingVideoId: null,
+  uploadVideoDuration: null,
   renderId: 0,
   usingDemoData: false,
 };
@@ -172,6 +173,39 @@ async function requestOnce(path, options = {}, signal) {
   return payload.data;
 }
 
+// Direct browser → Cloudinary upload using a signature the API server minted.
+// The media bytes never pass through our API server, so hosts that cap request
+// body size (Vercel serverless → 413 above ~4.5 MB) cannot reject big videos.
+// XHR again, so we get real upload progress.
+function uploadFileToCloudinary(file, signature, resourceType, { onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const endpoint = `https://api.cloudinary.com/v1_1/${signature.cloudName}/${resourceType}/upload`;
+    const body = new FormData();
+    body.append("file", file, file.name);
+    body.append("api_key", signature.apiKey);
+    body.append("timestamp", String(signature.timestamp));
+    body.append("signature", signature.signature);
+    body.append("folder", signature.folder);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", endpoint);
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      let payload = {};
+      try { payload = JSON.parse(xhr.responseText || "{}"); } catch { /* non-JSON error body */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload.secure_url) return resolve(payload);
+      reject(new Error(payload?.error?.message || `Media upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Network error while uploading. Check your connection and try again."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Try again."));
+    xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.send(body);
+  });
+}
+
 // XHR-based request for uploads: fetch cannot report progress. Reports real
 // bytes-on-the-wire percentage; no fake numbers.
 function uploadWithProgress(path, { method = "POST", body, onProgress, timeoutMs = 0 } = {}) {
@@ -298,6 +332,7 @@ function resetUploadPreviews() {
   const videoPlayer = $("#video-preview-player");
   const thumbPreview = $("#thumbnail-preview");
   const progress = $("#upload-progress");
+  state.uploadVideoDuration = null;
   if (videoPlayer?.dataset.objectUrl) URL.revokeObjectURL(videoPlayer.dataset.objectUrl);
   if (thumbPreview?.dataset.objectUrl) URL.revokeObjectURL(thumbPreview.dataset.objectUrl);
   if (videoPreviewBox) videoPreviewBox.hidden = true;
@@ -369,6 +404,15 @@ function bindUploadForm() {
     showThumbnailPreview(file);
   });
 
+  // Read the real duration off the preview player as soon as the browser can
+  // decode the header — the DB then gets a sensible duration immediately.
+  const previewPlayer = $("#video-preview-player");
+  previewPlayer?.addEventListener("loadedmetadata", () => {
+    state.uploadVideoDuration = Number.isFinite(previewPlayer.duration) && previewPlayer.duration > 0
+      ? Math.round(previewPlayer.duration)
+      : null;
+  });
+
   form.addEventListener("reset", () => resetUploadPreviews());
 }
 
@@ -406,21 +450,39 @@ async function handleUpload(form) {
   if (progressBox) progressBox.hidden = false;
   setStatus("Uploading your video… You can keep this window open.");
 
-  const body = new FormData();
-  body.append("videoFile", videoFile, videoFile.name);
-  body.append("thumbnail", thumbnail, thumbnail.name);
-  body.append("title", title);
-  if (description) body.append("description", description);
-
   try {
-    // XHR gives real bytes-sent progress; fetch cannot.
-    const video = await uploadWithProgress("/videos", {
-      body,
+    // 1. Ask our API for a short-lived Cloudinary signature.
+    // 2. Push the video + thumbnail straight to Cloudinary from the browser.
+    // 3. Register both URLs with the API. The video bytes never touch our
+    //    server, so serverless body-size limits (Vercel → 413) never apply.
+    setStatus("Preparing secure upload…");
+    const signature = await request("/videos/upload-signature", { timeoutMs: 15000 });
+
+    const videoUpload = await uploadFileToCloudinary(videoFile, signature, "video", {
       onProgress: (percent) => {
-        if (fill) fill.style.width = `${percent}%`;
+        if (fill) fill.style.width = `${Math.floor(percent / 2)}%`;
         if (percentLabel) percentLabel.textContent = `${percent}%`;
-        if (percent >= 100) setStatus("Processing on the server — almost done…");
       },
+    });
+    if (fill) fill.style.width = "50%";
+    if (percentLabel) percentLabel.textContent = "100%";
+    setStatus("Uploading thumbnail…");
+
+    const thumbUpload = await uploadFileToCloudinary(thumbnail, signature, "image");
+    if (fill) fill.style.width = "75%";
+    setStatus("Publishing your video…");
+
+    const video = await request("/videos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        description,
+        videoUrl: videoUpload.secure_url,
+        thumbnailUrl: thumbUpload.secure_url,
+        duration: state.uploadVideoDuration || undefined,
+      }),
+      timeoutMs: 30000,
     });
     if (fill) fill.style.width = "100%";
     if (percentLabel) percentLabel.textContent = "100%";

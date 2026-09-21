@@ -6,7 +6,7 @@ import { Like } from "../models/like.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
-import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
+import { uploadOnCloudinary, deleteFromCloudinary, createUploadSignature } from "../utils/cloudinary.js";
 
 const ownerFields = "username fullname avatar";
 
@@ -243,24 +243,8 @@ const togglePublishStatus = asyncHandler(async (req, res) => {
 // Signs a direct-to-Cloudinary upload for the signed-in creator. Only the
 // derived signature is returned — the API secret never leaves the server.
 const getUploadSignature = asyncHandler(async (req, res) => {
-  const timestamp = Math.round(Date.now() / 1000);
-  const folder = "novaplay";
-  const signature = cloudinary.utils.api_sign_request(
-    { timestamp, folder },
-    process.env.CLOUDINARY_API_SECRET
-  );
   return res.status(200).json(
-    new ApiResponse(
-      200,
-      {
-        timestamp,
-        signature,
-        folder,
-        apiKey: process.env.CLOUDINARY_API_KEY,
-        cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      },
-      "Upload signature generated"
-    )
+    new ApiResponse(200, createUploadSignature(), "Upload signature generated")
   );
 });
 
