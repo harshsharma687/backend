@@ -36,7 +36,10 @@ const imageFields = new Set(["avatar", "coverImage", "thumbnail", "image"]);
 
 const fileFilter = (req, file, cb) => {
   const isAllowedImage = imageFields.has(file.fieldname) && file.mimetype.startsWith("image/");
-  const isAllowedVideo = file.fieldname === "videoFile" && file.mimetype.startsWith("video/");
+  // "recording" = raw MediaRecorder capture uploaded after a live stream ends.
+  const isAllowedVideo =
+    (file.fieldname === "videoFile" || file.fieldname === "recording") &&
+    file.mimetype.startsWith("video/");
 
   if (isAllowedImage || isAllowedVideo) return cb(null, true);
   return cb(new multer.MulterError("LIMIT_UNEXPECTED_FILE", file.fieldname));

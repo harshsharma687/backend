@@ -40,6 +40,22 @@ const state = {
   activeVideo: null,
   pendingVideoId: null,
   uploadVideoDuration: null,
+  live: {
+    previewStream: null,
+    room: null,
+    dbStream: null,
+    recorder: null,
+    chunks: [],
+    facingMode: "user",
+    micOn: true,
+    camOn: true,
+    viewerTimer: null,
+    lastRecording: null, // Blob kept in memory so a failed upload can be retried
+    recordingFor: null,  // stream id the blob belongs to
+    startedAtMs: null,   // when the broadcast actually started (min-duration guard)
+    publishedTracks: [], // LiveKit publications made from the preview tracks
+    isHost: false,       // this tab is broadcasting (studio) vs watching
+  },
   renderId: 0,
   usingDemoData: false,
 };
@@ -78,7 +94,12 @@ function relativeDate(value) {
   return `${months}mo ago`;
 }
 
-function avatarFor(owner = {}) { return owner.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(owner.fullname || owner.username || "NovaPlay")}&background=f4c95d&color=33290f&bold=true`; }
+function avatarFor(owner) {
+  // owner can be null when the account behind a video/stream was deleted while
+  // its content remains — default parameters do not apply to explicit null.
+  const o = owner || {};
+  return o.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(o.fullname || o.username || "NovaPlay")}&background=f4c95d&color=33290f&bold=true`;
+}
 
 function normaliseVideo(video = {}) {
   return {
@@ -874,6 +895,789 @@ async function renderLibrary() {
   } catch (error) { libraryEmpty("Your library", error.message, "home", "Explore videos"); }
 }
 
+// ---------- Live streaming (real broadcasts via LiveKit) ----------
+// Architecture: the browser publishes camera/mic to a LiveKit Cloud room using
+// a short-lived JWT our API mints (secrets stay server-side). The host's own
+// browser records the composite broadcast with MediaRecorder while streaming;
+// on "End live" the recording uploads to Cloudinary and is registered as a
+// normal Video. Viewers subscribe through LiveKit's SFU — the server never
+// relays media, so this scales beyond a single box.
+
+const liveConfigured = async () => {
+  try {
+    const { configured } = await request("/live/config", { timeoutMs: 10000 });
+    return Boolean(configured);
+  } catch { return false; }
+};
+
+async function renderLive() {
+  const renderId = ++state.renderId;
+  const [liveNow, mine] = await Promise.all([
+    request("/live", { timeoutMs: 15000 }).catch(() => ({ streams: [] })),
+    state.user ? request("/live/mine", { dedupe: false, timeoutMs: 15000 }).catch(() => null) : Promise.resolve(null),
+  ]);
+  if (renderId !== state.renderId) return;
+  const configured = await liveConfigured();
+  const groups = mine?.groups || { live: [], scheduled: [], upcoming: [], processing: [], completed: [] };
+  const streamCard = (stream) => `
+    <article class="live-stream-card glass" data-stream-id="${escapeAttribute(stream._id)}">
+      <button class="live-card-thumb" type="button" data-action="open-watch-live" data-stream-id="${escapeAttribute(stream._id)}">
+        ${stream.thumbnail ? `<img src="${escapeAttribute(stream.thumbnail)}" alt="" />` : ""}
+        ${stream.status === "live" ? '<span class="live-card-badge">● LIVE</span>' : ''}
+        ${stream.status === "scheduled" ? '<span class="live-card-badge scheduled">⏰ Scheduled</span>' : ''}
+        ${stream.recording?.video ? '<span class="live-card-badge replay">▶ Replay</span>' : ''}
+      </button>
+      <div class="live-card-body">
+        <h3>${escapeHTML(stream.title)}</h3>
+        <p>${escapeHTML(stream.description || "No description")}</p>
+        <div class="live-card-meta">
+          ${stream.status === "live" ? `<span>👥 ${stream.peakViewers || 0} watching</span>` : ""}
+          ${stream.startedAt ? `<span>Started ${relativeDate(stream.startedAt)}</span>` : ""}
+        </div>
+        <div class="live-card-actions">
+          ${stream.status === "live" ? `<button class="action-button" type="button" data-action="open-watch-live" data-stream-id="${escapeAttribute(stream._id)}">Watch</button>` : ""}
+          ${stream.status === "live" ? `<button class="action-button danger" type="button" data-action="live-end-from-dashboard" data-stream-id="${escapeAttribute(stream._id)}">End</button>` : ""}
+          ${stream.recording?.video ? `<button class="action-button" type="button" data-action="open-recording" data-video-id="${escapeAttribute(stream.recording.video._id || stream.recording.video)}">▶ Recording</button>` : ""}
+          ${["scheduled", "ended", "failed"].includes(stream.status) ? `<button class="action-button" type="button" data-action="live-edit" data-stream-id="${escapeAttribute(stream._id)}">Edit</button>` : ""}
+          ${stream.status !== "live" ? `<button class="action-button danger" type="button" data-action="live-delete" data-stream-id="${escapeAttribute(stream._id)}">Delete</button>` : ""}
+        </div>
+        ${stream.status === "processing" ? '<p class="live-processing-note">⏳ Recording is being finalised… this page updates when it is ready.</p>' : ""}
+        ${stream.status === "failed" ? '<p class="live-failed-note">⚠ Recording failed — press Edit → retry, or delete this entry.</p>' : ""}
+      </div>
+    </article>`;
+  main.innerHTML = `
+    <section class="page-head">
+      <div><h1>Live</h1><p>Real-time streams from creators you follow — and your own broadcast studio.</p></div>
+      <button class="primary-button" type="button" data-action="open-live-studio" ${configured ? "" : "disabled title='Live streaming is not configured on this server'"}>● Go live</button>
+    </section>
+    ${!configured ? `<section class="live-config-warning glass"><strong>Live streaming is not configured on this server yet.</strong><p>The Go live button needs LiveKit credentials (LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET — free at cloud.livekit.io) set as environment variables. Everything else keeps working.</p></section>` : ""}
+    ${state.user ? `
+    <section class="live-dashboard">
+      <h2 class="section-heading">Your streams</h2>
+      ${groups.live.length ? `<div class="live-group"><h3>● Live now</h3><div class="live-stream-grid">${groups.live.map(streamCard).join("")}</div></div>` : ""}
+      ${groups.processing.length ? `<div class="live-group"><h3>⏳ Finalising recordings</h3><div class="live-stream-grid">${groups.processing.map(streamCard).join("")}</div></div>` : ""}
+      ${[...groups.scheduled, ...groups.upcoming].length ? `<div class="live-group"><h3>⏰ Scheduled</h3><div class="live-stream-grid">${[...groups.scheduled, ...groups.upcoming].map(streamCard).join("")}</div></div>` : ""}
+      ${groups.completed.length ? `<div class="live-group"><h3>📼 Completed</h3><div class="live-stream-grid">${groups.completed.map(streamCard).join("")}</div></div>` : ""}
+      ${!groups.live.length && !groups.scheduled.length && !groups.upcoming.length && !groups.completed.length && !groups.processing.length ? '<div class="empty-state" style="min-height:auto"><p>You have not streamed yet. Hit “Go live” to start your first broadcast.</p></div>' : ""}
+    </section>` : `<section class="empty-state glass" style="min-height:auto"><p>Sign in to run your own live streams.</p><button class="outline-button" type="button" data-action="open-login">Sign in</button></section>`}
+    <section class="live-now-section">
+      <h2 class="section-heading">Live right now</h2>
+      ${liveNow.streams.length ? `<div class="video-grid">${liveNow.streams.map((stream) => createLiveRailCard(stream)).join("")}</div>` : '<div class="empty-state" style="min-height:auto"><p>No one is live at the moment. Start the first stream!</p></div>'}
+    </section>`;
+}
+
+function createLiveRailCard(stream) {
+  return `
+    <article class="video-card live-rail-card">
+      <button class="video-thumb" type="button" data-action="open-watch-live" data-stream-id="${escapeAttribute(stream._id)}">
+        ${stream.thumbnail ? `<img src="${escapeAttribute(stream.thumbnail)}" alt="" loading="lazy" />` : '<div class="skeleton-thumb"></div>'}
+        <span class="duration live-duration-badge">● LIVE</span>
+      </button>
+      <div class="video-meta">
+        <img class="channel-avatar" src="${escapeAttribute(avatarFor(stream.owner))}" alt="" />
+        <div><h3>${escapeHTML(stream.title)}</h3><button class="channel-link" type="button" data-channel="${escapeAttribute(stream.owner?.username || "")}">${escapeHTML(stream.owner?.fullname || stream.owner?.username || "Deleted creator")}</button><p class="video-stats">${stream.peakViewers || 0} watching</p></div>
+      </div>
+    </article>`;
+}
+
+// ─── Go Live studio ──────────────────────────────────────────────────────────
+
+async function openLiveStudio() {
+  resetCreatorForms();
+  setModal("live-studio-modal", true);
+  const status = $("#live-status");
+  const hint = $("#live-preview-hint");
+  const empty = $("#live-preview-empty");
+  const preview = $("#live-preview-video");
+  status.hidden = true;
+  empty.hidden = false;
+  hint.textContent = "Requesting camera & microphone…";
+  stopLivePreviewOnly();
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support camera access (getUserMedia). Try Chrome, Edge or Safari.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: state.live.facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+    state.live.previewStream = stream;
+    preview.srcObject = stream;
+    empty.hidden = true;
+    state.live.micOn = true;
+    state.live.camOn = true;
+    updateLiveToggles();
+  } catch (error) {
+    const name = error?.name || "";
+    hint.textContent = name === "NotAllowedError"
+      ? "Camera & microphone permission denied. Allow access in your browser settings, then press Try again."
+      : name === "NotFoundError"
+        ? "No camera or microphone found on this device."
+        : (error.message || "Could not open the camera.");
+  }
+}
+
+function stopLivePreviewOnly() {
+  state.live.previewStream?.getTracks().forEach((track) => track.stop());
+  state.live.previewStream = null;
+  const preview = $("#live-preview-video");
+  if (preview) preview.srcObject = null;
+}
+
+function updateLiveToggles() {
+  const mic = $("#live-mic-toggle");
+  const cam = $("#live-cam-toggle");
+  if (mic) mic.textContent = state.live.micOn ? "🎙 Mic on" : "🎙 Mic off";
+  if (cam) cam.textContent = state.live.camOn ? "🎥 Camera on" : "🎥 Camera off";
+  const badge = $("#live-onair-badge");
+  if (badge) badge.hidden = state.live.dbStream?.status !== "live";
+}
+
+async function startLiveBroadcast(form) {
+  if (!requireAuth()) return;
+  const goButton = $("#live-go-button");
+  if (goButton?.dataset.busy === "1") return; // duplicate-tap guard
+  const restore = setButtonLoading(goButton, "Going live…", { icon: "●" });
+  const status = $("#live-status");
+  const setStatus = (text) => { if (status) { status.hidden = !text; status.textContent = text; } };
+  try {
+    if (!window.LivekitClient && !window.livekit) throw new Error("LiveKit client failed to load — check your connection and reload.");
+    const lk = window.LivekitClient || window.livekit;
+    const data = new FormData(form);
+    const title = String(data.get("title") || "").trim();
+    if (!title) throw new Error("Give your stream a title first.");
+    if (!state.live.previewStream) throw new Error("Camera preview is not ready. Allow camera access and press Try again.");
+
+    // 1. Create the stream record (thumbnail optional).
+    setStatus("Creating stream…");
+    let thumbnailUrl = "";
+    const thumbFile = data.get("thumbnail");
+    if (thumbFile instanceof File && thumbFile.size) {
+      const sig = await request("/videos/upload-signature", { timeoutMs: 15000 });
+      const uploaded = await uploadFileToCloudinary(thumbFile, sig, "image");
+      thumbnailUrl = uploaded.secure_url;
+    }
+    const stream = await request("/live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        description: String(data.get("description") || "").trim(),
+        visibility: data.get("visibility") || "public",
+        thumbnail: thumbnailUrl,
+      }),
+      timeoutMs: 20000,
+    });
+    state.live.dbStream = stream;
+
+    // 2. Go live: host token + LiveKit publish.
+    setStatus("Connecting to the live service…");
+    const { wsUrl, token } = await request(`/live/${stream._id}/go-live`, { method: "POST", timeoutMs: 20000 });
+    const room = new lk.Room({ adaptiveStream: true, dynacast: true });
+    state.live.room = room;
+    room.on(lk.RoomEvent.ParticipantConnected, () => refreshViewerCount());
+    room.on(lk.RoomEvent.ParticipantDisconnected, () => refreshViewerCount());
+    room.on(lk.RoomEvent.Disconnected, (reason) => {
+      // Network drops: LiveKit auto-reconnects; only a deliberate end closes the UI.
+      if (!state.live.dbStream || state.live.dbStream.status !== "live") cleanupLiveSession();
+      else setStatus("Connection lost — reconnecting…");
+    });
+    await room.connect(wsUrl, token);
+    // IMPORTANT: publish the EXACT preview tracks the user approved. Calling
+    // setCameraEnabled(true) here would make the SDK request a SECOND
+    // getUserMedia while our preview stream still holds the camera — on most
+    // phones that fails (device busy) and the viewer stays on "Connecting…"
+    // forever. Preview tracks become the broadcast tracks instead.
+    const localTracks = [];
+    for (const track of state.live.previewStream?.getTracks() || []) {
+      try { localTracks.push(await room.localParticipant.publishTrack(track)); }
+      catch (publishError) { console.error("Track publish failed:", publishError); }
+    }
+    if (!localTracks.length) throw new Error("Could not publish your camera/microphone. Check that no other app is using the camera, then try again.");
+    state.live.publishedTracks = localTracks;
+    bindLiveChatReceiver();
+    room.on(lk.RoomEvent.DataReceived, (payload) => window.__livekitDataHandler && window.__livekitDataHandler(payload));
+    // Moderation: refresh the host's participant panel as viewers come and go.
+    room.on(lk.RoomEvent.ParticipantConnected, () => renderLiveParticipants());
+    room.on(lk.RoomEvent.ParticipantDisconnected, () => renderLiveParticipants());
+
+    // 3. Start the in-browser recording that becomes the saved video.
+    state.live.isHost = true;
+    startLiveRecording();
+    state.live.startedAtMs = Date.now();
+
+    // 4. UI: live mode.
+    $("#live-go-button").hidden = true;
+    $("#live-end-button").hidden = false;
+    $("#live-viewer-row").hidden = false;
+    $("#live-studio-chat").hidden = false;
+    state.live.moderation = { chatLocked: false, isMuted: false, mutedIds: [] };
+    applyLiveModerationUI();
+    renderLiveParticipants();
+    $("#live-studio-title").textContent = "You are live";
+    $("#live-studio-subtitle").textContent = stream.title;
+    setStatus("");
+    toast("You are live! 🎉");
+  } catch (error) {
+    setStatus(error.message || "Could not go live.");
+    toast(error.message || "Could not go live.", "error");
+    // Partial-failure recovery: the stream record exists but we never reached
+    // "publishing" (or publishing failed). End it on the server so no ghost
+    // "live" entry stays in the dashboard / viewers never hang on Connecting….
+    if (state.live.dbStream && !state.live.recorder) {
+      const failedId = state.live.dbStream._id;
+      request(`/live/${failedId}/end`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hasRecording: false }) }).catch(() => {});
+      state.live.dbStream = null;
+      state.live.room?.disconnect?.().catch?.(() => {});
+      state.live.room = null;
+    }
+  } finally { restore(); }
+}
+
+function startLiveRecording() {
+  try {
+    const previewStream = state.live.previewStream;
+    if (!previewStream || typeof MediaRecorder === "undefined") {
+      console.warn("MediaRecorder unavailable — the stream will not be saved as a video.");
+      toast("Recording not supported on this browser — the live stream still works, but it will not be saved.", "error");
+      return;
+    }
+    const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+    const recorder = new MediaRecorder(previewStream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : {});
+    state.live.chunks = [];
+    recorder.ondataavailable = (event) => { if (event.data?.size) state.live.chunks.push(event.data); };
+    recorder.onerror = (event) => console.error("Recorder error:", event.error);
+    recorder.start(5000); // 5s chunks: network-safe, keeps memory bounded
+    state.live.recorder = recorder;
+  } catch (error) {
+    console.error("Could not start recording:", error);
+    toast("Recording could not start — the stream will not be saved. Others can still watch live.", "error");
+  }
+}
+
+async function stopLiveRecording() {
+  const recorder = state.live.recorder;
+  if (!recorder) return null;
+  state.live.recorder = null;
+  if (recorder.state !== "inactive") {
+    await new Promise((resolve) => {
+      recorder.onstop = resolve;
+      recorder.stop();
+    });
+  }
+  if (!state.live.chunks.length) return null;
+  const blob = new Blob(state.live.chunks, { type: recorder.mimeType || "video/webm" });
+  state.live.chunks = [];
+  // Junk guard: a "recording" under ~2s or ~20KB is an accidental tap, not a
+  // broadcast. Uploading it would create a broken 0-2s video on the channel.
+  const elapsedMs = state.live.startedAtMs ? Date.now() - state.live.startedAtMs : 0;
+  if (elapsedMs < 2000 || blob.size < 20_000) {
+    console.info(`Recording discarded (${Math.round(elapsedMs / 100) / 10}s, ${blob.size}B) — too short to keep.`);
+    state.live.lastRecording = null;
+    state.live.recordingFor = null;
+    return null;
+  }
+  state.live.lastRecording = blob;
+  state.live.recordingFor = state.live.dbStream?._id || null;
+  return blob;
+}
+
+async function endLiveFromStudio() {
+  const stream = state.live.dbStream;
+  if (!stream) return;
+  const endButton = $("#live-end-button");
+  if (endButton?.dataset.busy === "1") return;
+  const restore = endButton ? setButtonLoading(endButton, "Ending…", { icon: "" }) : () => {};
+  const status = $("#live-status");
+  const setStatus = (text) => { if (status) { status.hidden = !text; status.textContent = text; } };
+  try {
+    setStatus("Stopping the broadcast…");
+    // 1. Tell the API the stream ended (flips to "processing" so viewers see the right state).
+    await request(`/live/${stream._id}/end`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hasRecording: Boolean(state.live.recorder) }), timeoutMs: 20000 });
+    // 2. Stop LiveKit publishing.
+    try { await state.live.room?.disconnect(); } catch { /* already gone */ }
+    // 3. Stop the recorder and finalise the recording as a normal video.
+    const blob = await stopLiveRecording();
+    if (blob) {
+      setStatus("Saving your recording… this can take a minute.");
+      const result = await uploadRecordingBlob(stream._id, blob);
+      toast("Stream ended. Recording saved as a video! 🎬");
+      goto(`watch/${result.video._id}`);
+    } else {
+      setStatus("");
+      toast("Stream ended. No recording was captured (recorder unavailable).", "error");
+    }
+  } catch (error) {
+    // Upload failure keeps the blob in state.live.lastRecording for a retry.
+    setStatus(`Recording could not be saved: ${error.message}. Your stream has ended; retry from the Live dashboard.`);
+    request(`/live/${stream._id}/recording-failed`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ error: error.message }) }).catch(() => {});
+    toast("Recording could not be saved. You can retry from the Live dashboard.", "error");
+  } finally {
+    cleanupLiveSession();
+    restore();
+  }
+}
+
+async function uploadRecordingBlob(streamId, blob) {
+  const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+  const body = new FormData();
+  body.append("recording", new File([blob], `live-recording.${ext}`, { type: blob.type }));
+  const result = await request(`/live/${streamId}/recording`, { method: "POST", body, timeoutMs: 600000 }); // 10 min — big uploads
+  state.live.lastRecording = null;
+  state.live.recordingFor = null;
+  return result;
+}
+
+function cleanupLiveSession() {
+  state.live.room?.disconnect?.().catch?.(() => {});
+  state.live.room = null;
+  state.live.dbStream = null;
+  state.live.recorder = null;
+  state.live.chunks = [];
+  state.live.moderation = null;
+  state.live.publishedTracks = [];
+  state.live.startedAtMs = null;
+  state.live.isHost = false;
+  clearInterval(state.live.viewerTimer);
+  state.live.viewerTimer = null;
+  stopLivePreviewOnly();
+  // Reset the studio modal for the next session.
+  const go = $("#live-go-button");
+  const end = $("#live-end-button");
+  const form = $("#live-setup-form");
+  if (go) go.hidden = false;
+  if (end) end.hidden = true;
+  if (form) form.reset();
+  if (go) { delete go.dataset.busy; go.disabled = false; go.innerHTML = 'Go live <span>●</span>'; }
+  $("#live-viewer-row") && ($("#live-viewer-row").hidden = true);
+  $("#live-studio-chat") && ($("#live-studio-chat").hidden = true);
+  $("#live-studio-title") && ($("#live-studio-title").textContent = "Go live");
+  $("#live-studio-subtitle") && ($("#live-studio-subtitle").textContent = "Your camera preview appears here.");
+  $("#live-chat-list") && ($("#live-chat-list").innerHTML = "");
+  $("#live-onair-badge") && ($("#live-onair-badge").hidden = true);
+  const partWrap = $("#live-participants");
+  if (partWrap) partWrap.innerHTML = '<p class="live-mod-hint">Viewers you can moderate appear here once they join.</p>';
+}
+
+// Closing the studio (× button, backdrop tap, or Esc) while live must END the
+// stream properly — otherwise it stays "live" in the DB forever and viewers
+// hang on "Connecting…". We stop the broadcast, keep the recorder running
+// until the blob exists, then finalise the recording in the background.
+let liveEndingPromise = null;
+function endLiveOnStudioClose() {
+  const stream = state.live.dbStream;
+  if (!stream && !state.live.recorder) return;
+  // Idempotent: only one end-flow at a time.
+  if (liveEndingPromise) return liveEndingPromise;
+  const wasLive = Boolean(stream);
+  const streamId = stream?._id;
+  toast("Stream ended — saving the recording…");
+  liveEndingPromise = (async () => {
+    try {
+      if (wasLive) {
+        await request(`/live/${streamId}/end`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hasRecording: Boolean(state.live.recorder) }), timeoutMs: 20000 });
+      }
+    } catch { /* the auto-sweep below also fixes stuck streams */ }
+    try { state.live.room?.disconnect?.(); } catch { /* already gone */ }
+    const blob = await stopLiveRecording();
+    cleanupLiveSession();
+    if (blob && streamId) {
+      try {
+        await uploadRecordingBlob(streamId, blob);
+        toast("Recording saved to your videos 🎬");
+      } catch (error) {
+        // Blob stays in state.live.lastRecording — dashboard retry handles it.
+        request(`/live/${streamId}/recording-failed`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ error: error.message }) }).catch(() => {});
+        toast(`Recording could not be saved (${error.message}). Retry from the Live dashboard.`, "error");
+      }
+    } else if (wasLive) {
+      toast("Stream ended. No recording was captured.");
+    }
+    liveEndingPromise = null;
+  })();
+  return liveEndingPromise;
+}
+
+async function refreshViewerCount() {
+  const stream = state.live.dbStream;
+  if (!stream) return;
+  try {
+    const room = state.live.room;
+    const count = room ? Math.max(0, room.remoteParticipants.size) : 0;
+    await request(`/live/${stream._id}/viewers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ count }), timeoutMs: 10000 });
+    const label = $("#live-viewer-count");
+    if (label) label.textContent = `👥 ${count} watching`;
+    const peak = $("#live-peak-count");
+    if (peak) peak.textContent = `Peak: ${stream.peakViewers || 0}`;
+  } catch { /* viewer reporting is best-effort */ }
+}
+
+async function toggleLiveDevice(kind) {
+  if (state.live.room) {
+    const enabled = kind === "mic" ? await state.live.room.localParticipant.setMicrophoneEnabled(!state.live.micOn) : await state.live.room.localParticipant.setCameraEnabled(!state.live.camOn);
+    if (kind === "mic") state.live.micOn = enabled;
+    else state.live.camOn = enabled;
+  } else if (state.live.previewStream) {
+    state.live.previewStream.getAudioTracks().forEach((t) => (t.enabled = !state.live.micOn));
+    state.live.previewStream.getVideoTracks().forEach((t) => (t.enabled = !state.live.camOn));
+    if (kind === "mic") state.live.micOn = !state.live.micOn;
+    else state.live.camOn = !state.live.camOn;
+  }
+  updateLiveToggles();
+}
+
+async function switchLiveCamera() {
+  if (state.live.room) {
+    // Switch while live: flip facingMode, acquire the NEW camera first, then
+    // unpublish the old track and publish the new one (the supported API path —
+    // LocalTrackPublication has no replaceTrack). Viewers see a brief flip.
+    state.live.facingMode = state.live.facingMode === "user" ? "environment" : "user";
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: state.live.facingMode }, audio: false });
+      const newTrack = newStream.getVideoTracks()[0];
+      const old = state.live.previewStream?.getVideoTracks()[0];
+      if (old) await state.live.room.localParticipant.unpublishTrack(old);
+      await state.live.room.localParticipant.publishTrack(newTrack);
+      old?.stop();
+      state.live.previewStream?.removeTrack(old);
+      state.live.previewStream?.addTrack(newTrack);
+      $("#live-preview-video").srcObject = state.live.previewStream;
+    } catch (error) {
+      toast("Could not switch camera: " + (error.message || "not supported here"), "error");
+    }
+    return;
+  }
+  if (state.live.previewStream) {
+    state.live.facingMode = state.live.facingMode === "user" ? "environment" : "user";
+    await openLiveStudio(); // simplest correct path: re-request devices with the new facing mode
+  }
+}
+
+// ─── Watch live (viewer side) ────────────────────────────────────────────────
+
+async function renderWatchLive(streamId) {
+  const renderId = ++state.renderId;
+  if (!streamId) { main.innerHTML = '<div class="empty-state"><h2>Stream not found</h2><a href="#live" class="primary-button">Back to Live</a></div>'; return; }
+  let data;
+  try {
+    data = await request(`/live/${streamId}`, { timeoutMs: 15000 });
+  } catch {
+    main.innerHTML = '<div class="empty-state"><span class="empty-icon">!</span><h2>Stream not found</h2><p>It may have been deleted or made private.</p><a href="#live" class="primary-button">Back to Live</a></div>';
+    return;
+  }
+  if (renderId !== state.renderId) return;
+  const { stream, isOwner } = data;
+  const owner = stream.owner || {};
+  if (stream.recording?.video && stream.status === "ended") {
+    // Recording ready → straight to the saved video.
+    goto(`watch/${stream.recording.video._id || stream.recording.video}`);
+    return;
+  }
+  const processing = stream.status === "processing";
+  main.innerHTML = `
+    <div class="watch-layout">
+      <section class="watch-primary">
+        <div class="player-wrap live-player-wrap">
+          <video id="live-watch-video" class="live-watch-video" autoplay playsinline ${isOwner ? "" : "muted"}></video>
+          <div class="live-watch-overlay" id="live-watch-overlay"><div><h3>${stream.status === "live" ? "Connecting to the live stream…" : processing ? "⏳ Stream ended — recording is being finalised" : "This stream has ended"}</h3><p>${processing ? "The recording will appear here and on the channel when it is ready." : ""}</p></div></div>
+        </div>
+        <h1 class="watch-title">${escapeHTML(stream.title)}</h1>
+        <div class="watch-info-row">
+          <div class="channel-summary"><img src="${escapeAttribute(avatarFor(owner))}" alt="" /><div><strong>${escapeHTML(owner.fullname || owner.username || "Creator")}</strong><small>${owner.username ? "@" + escapeHTML(owner.username) : ""}</small></div></div>
+          <div class="watch-actions"><span class="action-button static">${stream.status === "live" ? `● LIVE · <span id="live-watch-viewers">?</span> watching</span>` : ""}</div>
+        </div>
+        <div class="video-description"><small>${stream.startedAt ? "Started " + relativeDate(stream.startedAt) : ""}</small>${escapeHTML(stream.description || "")}</div>
+        ${isOwner ? `<section class="glass live-owner-tools"><h3>Stream tools</h3><p>Status: <strong>${stream.status}</strong>${stream.recording?.status === "ready" ? " · recording saved" : ""}</p><button class="danger-button" type="button" data-action="live-end" data-stream-id="${escapeAttribute(stream._id)}">End live stream</button></section>` : ""}
+      </section>
+      <aside class="watch-aside">
+        <h2 class="suggestions-title">Live chat</h2>
+        <div class="live-chat-section live-chat-standalone">
+          <div class="live-chat-list" id="live-chat-list"></div>
+          ${state.user ? '<form class="live-chat-form" id="live-chat-form"><input name="content" maxlength="300" placeholder="Say something…" autocomplete="off" /><button class="primary-button" type="submit">Send</button></form>' : '<p class="live-chat-signin">Sign in to chat.</p>'}
+        </div>
+      </aside>
+    </div>`;
+  // Recording-ready poll while the recording finalises.
+  if (processing) {
+    const poll = setInterval(async () => {
+      if (renderId !== state.renderId) return clearInterval(poll);
+      try {
+        const fresh = await request(`/live/${streamId}`, { dedupe: false, timeoutMs: 12000 });
+        if (fresh.stream.status === "ended" && fresh.stream.recording?.video) {
+          clearInterval(poll);
+          toast("The recording is ready! 🎬");
+          goto(`watch/${fresh.stream.recording.video._id || fresh.stream.recording.video}`);
+        }
+        if (fresh.stream.status === "failed") { clearInterval(poll); $("#live-watch-overlay h3").textContent = "Recording failed — the host can retry from their dashboard."; }
+      } catch { /* keep polling through hiccups */ }
+    }, 10000);
+    return;
+  }
+  if (stream.status !== "live") return;
+  // Live: connect as a subscriber.
+  try {
+    const { configured } = await request("/live/config", { timeoutMs: 10000 });
+    if (!configured) throw new Error("not-configured");
+    const lk = window.LivekitClient || window.livekit;
+    if (!lk) throw new Error("LiveKit client failed to load.");
+    const joinData = await request(`/live/${streamId}/join`, { method: "POST", timeoutMs: 15000 });
+    state.live.moderation = joinData.moderation || { chatLocked: false, isMuted: false };
+    applyLiveModerationUI();
+    const { wsUrl, token } = joinData;
+    const room = new lk.Room({ adaptiveStream: true });
+    let gotVideo = false;
+    room.on(lk.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === "video") {
+        gotVideo = true;
+        track.attach($("#live-watch-video"));
+      } else {
+        track.attach(new Audio());
+      }
+      $("#live-watch-overlay").hidden = true;
+    });
+    room.on(lk.RoomEvent.ParticipantDisconnected, () => {
+      $("#live-watch-overlay").hidden = false;
+      $("#live-watch-overlay h3").textContent = "The host ended the stream — recording is being saved.";
+    });
+    await room.connect(wsUrl, token);
+    state.live.viewerRoom = room;
+    bindLiveChatReceiver();
+    room.on(lk.RoomEvent.DataReceived, (payload) => window.__livekitDataHandler && window.__livekitDataHandler(payload));
+    applyLiveModerationUI();
+    // "Connecting…" must never hang forever: if the host's room has no video
+    // track after 20s (host on a busy phone, or the broadcast died), tell the
+    // viewer plainly instead of leaving them on an endless spinner.
+    setTimeout(() => {
+      const overlay = $("#live-watch-overlay");
+      if (renderId !== state.renderId || !overlay || gotVideo) return;
+      const hostHere = [...room.remoteParticipants.values()].some((p) =>
+        [...p.trackPublications.values()].some((t) => t.kind === "video" && !t.isMuted)
+      );
+      if (!hostHere) {
+        overlay.hidden = false;
+        overlay.querySelector("h3").textContent = "The host's camera is not streaming right now — waiting for them to start video…";
+      }
+    }, 20000);
+  } catch (error) {
+    const overlay = $("#live-watch-overlay");
+    if (overlay) {
+      overlay.hidden = false;
+      overlay.querySelector("h3").textContent = error.message === "not-configured"
+        ? "Live streaming is not configured on this server yet."
+        : "Could not connect to the live stream. Try refreshing.";
+    }
+  }
+}
+
+async function endLiveFromDashboard(streamId) {
+  if (!requireAuth()) return;
+  if (!window.confirm("End this live stream now? The recording will be saved to your videos.")) return;
+  try {
+    await request(`/live/${streamId}/end`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hasRecording: false }), timeoutMs: 20000 });
+    toast("Stream ended.");
+    renderLive();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function editLiveStream(streamId) {
+  if (!requireAuth()) return;
+  let stream;
+  try { stream = (await request(`/live/${streamId}`)).stream; } catch (error) { return toast(error.message, "error"); }
+  const title = window.prompt("Stream title", stream.title);
+  if (title === null) return;
+  const description = window.prompt("Description", stream.description || "");
+  if (description === null) return;
+  const visibility = window.prompt("Visibility: public or unlisted", stream.visibility || "public");
+  if (visibility === null) return;
+  try {
+    await request(`/live/${streamId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, description, visibility: visibility === "unlisted" ? "unlisted" : "public" }), timeoutMs: 20000 });
+    toast("Stream updated.");
+    renderLive();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function deleteLiveStream(streamId) {
+  if (!requireAuth()) return;
+  if (!window.confirm("Delete this stream permanently? (Recordings already saved as videos are not removed.)")) return;
+  try {
+    await request(`/live/${streamId}`, { method: "DELETE", timeoutMs: 20000 });
+    toast("Stream deleted.");
+    renderLive();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+// Live chat flows through LiveKit data channels — no chat server needed, works
+// for host and viewers, and dies with the room when the stream ends.
+// Moderation: the host can mute (temporarily block messages), block (eject +
+// ban for the stream) or lock the whole chat. State travels over the same
+// data channel (kind: "moderation") so viewers see it without polling.
+
+function liveModerationState() {
+  return state.live.moderation || { chatLocked: false, isMuted: false };
+}
+
+function liveCanChat() {
+  if (!state.user && !state.live.viewerRoom && !state.live.room) return false;
+  const mod = liveModerationState();
+  const isHost = Boolean(state.live.isHost || state.live.dbStream);
+  if (isHost) return true;
+  if (mod.chatLocked) return false;
+  if (mod.isMuted) return false;
+  return true;
+}
+
+function setLiveChatBlocked(reason) {
+  const form = $("#live-chat-form");
+  if (!form) return;
+  const input = form.querySelector("input[name=content]");
+  const button = form.querySelector("button[type=submit]");
+  if (reason) {
+    input.disabled = true;
+    button.disabled = true;
+    input.placeholder = reason;
+  } else {
+    input.disabled = false;
+    button.disabled = false;
+    input.placeholder = "Say something…";
+  }
+}
+
+function applyLiveModerationUI() {
+  const mod = liveModerationState();
+  if (!liveCanChat()) {
+    setLiveChatBlocked(mod.isMuted ? "The host muted you for this stream" : mod.chatLocked ? "Chat is paused by the host" : "");
+  } else {
+    setLiveChatBlocked("");
+  }
+  // Host-only chat lock toggle in the studio.
+  const lockBtn = $("#live-chat-lock");
+  if (lockBtn) lockBtn.textContent = mod.chatLocked ? "💬 Chat locked" : "💬 Chat open";
+}
+
+function handleLiveModerationEvent(message) {
+  const isHost = Boolean(state.live.isHost || state.live.dbStream);
+  // The block event carries my user id → I was ejected.
+  if (message.action === "block" && message.viewerId && state.user && message.viewerId === state.user._id) {
+    toast("The host removed you from this stream.", "error");
+    state.live.viewerRoom?.disconnect();
+    state.live.viewerRoom = null;
+    const overlay = $("#live-watch-overlay");
+    if (overlay) {
+      overlay.hidden = false;
+      const h3 = overlay.querySelector("h3");
+      if (h3) h3.textContent = "The host removed you from this stream.";
+    }
+    return;
+  }
+  // Viewers only care about actions targeting them or the whole room.
+  if (message.action === "lock-chat") { state.live.moderation = { ...liveModerationState(), chatLocked: true }; if (!isHost) toast("Chat was paused by the host."); }
+  if (message.action === "unlock-chat") { state.live.moderation = { ...liveModerationState(), chatLocked: false }; if (!isHost) toast("Chat is open again."); }
+  if (message.action === "mute" && message.viewerId && state.user && message.viewerId === state.user._id) {
+    state.live.moderation = { ...liveModerationState(), isMuted: true };
+    if (!isHost) toast("The host muted you for this stream.", "error");
+  }
+  if (message.action === "unmute" && message.viewerId && state.user && message.viewerId === state.user._id) {
+    state.live.moderation = { ...liveModerationState(), isMuted: false };
+    if (!isHost) toast("You can chat again.");
+  }
+  applyLiveModerationUI();
+}
+
+async function moderateLiveChat(streamId, action, viewerId) {
+  if (!requireAuth()) return;
+  try {
+    const result = await request(`/live/${streamId}/moderate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, viewerId }),
+      timeoutMs: 15000,
+    });
+    // Keep the host's local copy of the mute list in sync with the server.
+    if (result?.moderation) state.live.moderation = { ...liveModerationState(), ...result.moderation, mutedIds: result.moderation.mutedViewerIds || [] };
+    // Tell every connected client so their UI updates instantly.
+    const event = JSON.stringify({ kind: "moderation", action, viewerId, at: Date.now() });
+    const room = state.live.room || state.live.viewerRoom;
+    room?.localParticipant?.publishData(new TextEncoder().encode(event), { reliable: true });
+    handleLiveModerationEvent(JSON.parse(event));
+    // Refresh the participant list in the host studio.
+    if (state.live.isHost) renderLiveParticipants();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function renderLiveParticipants() {
+  const wrap = $("#live-participants");
+  if (!wrap) return;
+  const room = state.live.room;
+  const mod = liveModerationState();
+  const streamId = state.live.dbStream?._id;
+  const participants = room ? [...room.remoteParticipants.values()] : [];
+  if (!participants.length) {
+    wrap.innerHTML = '<p class="live-mod-hint">No viewers connected right now.</p>';
+    return;
+  }
+  // Viewer identities look like "viewer-<userId>-<timestamp>" (see
+  // createViewerToken). Guests have no userId segment we can act on.
+  const userIdFromIdentity = (identity) => {
+    const match = /^viewer-([a-f0-9]{24})-/.exec(String(identity || ""));
+    return match ? match[1] : null;
+  };
+  wrap.innerHTML = participants.map((p) => {
+    const userId = userIdFromIdentity(p.identity);
+    const muted = userId && (mod.mutedIds || []).includes(userId);
+    const buttons = userId && streamId
+      ? '<button class="action-button ' + (muted ? "" : "danger") + '" type="button" data-action="live-mod" data-stream-id="' + escapeAttribute(streamId) + '" data-mod-action="' + (muted ? "unmute" : "mute") + '" data-viewer-id="' + escapeAttribute(userId) + '">' + (muted ? "Unmute" : "Mute") + '</button>' +
+        '<button class="action-button danger" type="button" data-action="live-mod" data-stream-id="' + escapeAttribute(streamId) + '" data-mod-action="block" data-viewer-id="' + escapeAttribute(userId) + '">Block</button>'
+      : '<span class="live-mod-hint">guest</span>';
+    return '<div class="live-mod-row"><span class="live-mod-name">' + escapeHTML(p.name || p.identity) + '</span>' + buttons + '</div>';
+  }).join("");
+}
+
+function sendLiveChat(form) {
+  const content = String(new FormData(form).get("content") || "").trim();
+  if (!content) return;
+  if (!liveCanChat()) {
+    const mod = liveModerationState();
+    toast(mod.isMuted ? "The host muted you for this stream." : mod.chatLocked ? "Chat is paused by the host." : "Sign in to chat.", "error");
+    return;
+  }
+  const lk = window.LivekitClient || window.livekit;
+  const payload = JSON.stringify({
+    kind: "chat",
+    text: content.slice(0, 300),
+    from: state.user ? { name: state.user.fullname || state.user.username, username: state.user.username } : { name: "Guest" },
+    at: Date.now(),
+  });
+  try {
+    if (state.live.room) state.live.room.localParticipant.publishData(new TextEncoder().encode(payload), { reliable: true });
+    else if (state.live.viewerRoom) state.live.viewerRoom.localParticipant.publishData(new TextEncoder().encode(payload), { reliable: true });
+    else throw new Error("Chat is only available while connected to a live stream.");
+    appendLiveChatMessage(JSON.parse(payload));
+    form.reset();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function appendLiveChatMessage(message) {
+  const list = $("#live-chat-list");
+  if (!list) return;
+  const item = document.createElement("div");
+  item.className = "live-chat-item";
+  item.innerHTML = `<strong>${escapeHTML(message.from?.name || "Guest")}</strong><p>${escapeHTML(message.text || "")}</p>`;
+  list.append(item);
+  list.scrollTop = list.scrollHeight;
+}
+
+function bindLiveChatReceiver() {
+  const lk = window.LivekitClient || window.livekit;
+  if (!lk) return;
+  const handler = (payload) => {
+    try {
+      const message = JSON.parse(new TextDecoder().decode(payload.data));
+      if (message?.kind === "chat" && message.text) appendLiveChatMessage(message);
+      if (message?.kind === "moderation" && message.action) handleLiveModerationEvent(message);
+    } catch { /* ignore malformed packets */ }
+  };
+  // Called by both host and viewer rooms after connect.
+  window.__livekitDataHandler = handler;
+}
+
 // ---------- You / Account page (mobile-first, YouTube-style) ----------
 
 function youRow(icon, label, attrs = "") {
@@ -1152,6 +1956,8 @@ async function navigate() {
   if (route === "search") return renderHome({ query: parts.join("/") });
   if (route === "subscriptions") return renderSubscriptions();
   if (route === "you") return renderYou();
+  if (route === "live") return renderLive();
+  if (route === "watch-live") return renderWatchLive(parts.join("/"));
   if (route === "liked") return renderLikedVideos();
   if (route === "my-posts") return renderMyPosts();
   if (route === "library") return renderLibrary();
@@ -1309,6 +2115,13 @@ async function handleComment(form) {
     const list = $("#comment-list");
     if (list.querySelector(".empty-state")) list.replaceChildren();
     list.insertAdjacentHTML("afterbegin", commentMarkup(comment));
+    // Keep the "N comments" heading in sync after adding one.
+    const heading = $("#comments-heading");
+    if (heading) {
+      const match = /^\d+/.exec(heading.textContent);
+      const current = match ? Number(match[0]) : 0;
+      heading.textContent = `${current + 1} comment${current + 1 === 1 ? "" : "s"}`;
+    }
     form.reset();
     toast("Comment added.");
   } catch (error) { toast(error.message, "error"); }
@@ -1400,7 +2213,16 @@ function bindEvents() {
     const button = event.target.closest("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
-    if (action === "close-modal") { button.closest("dialog")?.close(); return; }
+    if (action === "close-modal") {
+      // Live studio close while broadcasting must end the stream properly.
+      if (button.closest("#live-studio-modal") && (state.live.dbStream || state.live.recorder)) {
+        button.closest("dialog").close();
+        endLiveOnStudioClose();
+        return;
+      }
+      button.closest("dialog")?.close();
+      return;
+    }
     if (action === "remove-video-file") {
       const form = $("#upload-form");
       if (form?.elements.videoFile) form.elements.videoFile.value = "";
@@ -1434,6 +2256,24 @@ function bindEvents() {
     if (action === "delete-video") { deleteVideo(button.dataset.videoId); return; }
     if (action === "go-playlists") { goto("playlists"); return; }
     if (action === "go-history") { goto("history"); return; }
+    if (action === "open-live-studio") { if (requireAuth()) openLiveStudio(); return; }
+    if (action === "live-retry-devices") { openLiveStudio(); return; }
+    if (action === "live-toggle-mic") { toggleLiveDevice("mic"); return; }
+    if (action === "live-toggle-cam") { toggleLiveDevice("cam"); return; }
+    if (action === "live-switch-camera") { switchLiveCamera(); return; }
+    if (action === "live-end") { if (state.live.dbStream) endLiveFromStudio(); else endLiveFromDashboard(button.dataset.streamId); return; }
+    if (action === "live-end-from-dashboard") { endLiveFromDashboard(button.dataset.streamId); return; }
+    if (action === "open-watch-live") { goto(`watch-live/${button.dataset.streamId}`); return; }
+    if (action === "open-recording") { goto(`watch/${button.dataset.videoId}`); return; }
+    if (action === "live-edit") { editLiveStream(button.dataset.streamId); return; }
+    if (action === "live-delete") { deleteLiveStream(button.dataset.streamId); return; }
+    if (action === "live-mod") { moderateLiveChat(button.dataset.streamId, button.dataset.modAction, button.dataset.viewerId); return; }
+    if (action === "live-mod-lock") {
+      const streamId = state.live.dbStream?._id;
+      const locking = !liveModerationState().chatLocked;
+      if (streamId) moderateLiveChat(streamId, locking ? "lock-chat" : "unlock-chat");
+      return;
+    }
     if (action === "home") { goto("home"); }
   });
 
@@ -1454,11 +2294,22 @@ function bindEvents() {
     if (event.target.id === "playlist-form") { event.preventDefault(); handlePlaylist(event.target); return; }
     if (event.target.id === "settings-form") { event.preventDefault(); handleSettings(event.target); return; }
     if (event.target.id === "post-form") { event.preventDefault(); handleCreatePost(event.target); return; }
+    if (event.target.id === "live-setup-form") { event.preventDefault(); startLiveBroadcast(event.target); return; }
+    if (event.target.id === "live-chat-form") { event.preventDefault(); sendLiveChat(event.target); return; }
     if (event.target.classList?.contains("post-comment-form")) { event.preventDefault(); postComment(event.target); return; }
     if (event.target.id === "comment-form") { event.preventDefault(); handleComment(event.target); }
   });
 
-  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); }));
+  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    if (dialog.id === "live-studio-modal" && (state.live.dbStream || state.live.recorder)) { dialog.close(); endLiveOnStudioClose(); return; }
+    dialog.close();
+  }));
+  // Esc key / cancel event on the live studio also ends the stream.
+  const liveModal = $("#live-studio-modal");
+  if (liveModal) liveModal.addEventListener("cancel", (event) => {
+    if (state.live.dbStream || state.live.recorder) { event.preventDefault(); liveModal.close(); endLiveOnStudioClose(); }
+  });
 }
 
 async function restoreSession() {

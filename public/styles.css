@@ -118,6 +118,9 @@ button { cursor: pointer; }
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
 img { display: block; max-width: 100%; }
+/* The UA's [hidden] { display: none } loses to any class setting display.
+   This higher-specificity rule keeps the hidden attribute meaningful everywhere. */
+[hidden] { display: none !important; }
 ::selection { background: var(--accent); color: var(--on-accent); }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -468,6 +471,180 @@ img { display: block; max-width: 100%; }
 }
 .watch-actions { display: flex; align-items: center; gap: 7px; overflow-x: auto; scrollbar-width: none; padding: 2px 0; }
 .watch-actions::-webkit-scrollbar { display: none; }
+
+/* ============================================================
+   Live streaming: dashboard, watch page, studio, chat
+   Every live-* class used by app.js / index.html lives here.
+   ============================================================ */
+
+/* Danger variant of the shared pill button (End stream, Delete) */
+.danger-button {
+  min-height: 44px; padding: 0 18px; border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--glass-border));
+  border-radius: 999px; background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+  color: var(--danger); font-size: 13px; font-weight: 700;
+  transition: filter .16s ease, transform .16s ease;
+}
+.danger-button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+.danger-button:active { transform: translateY(1px); }
+.danger-button:disabled { opacity: .6; cursor: progress; transform: none; }
+.danger-button.wide { width: 100%; }
+.action-button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--glass-border)); }
+.action-button.danger:hover { background: color-mix(in srgb, var(--danger) 10%, var(--accent-wash)); border-color: var(--danger); }
+.action-button.static { cursor: default; pointer-events: none; font-weight: 800; }
+
+/* ---------- Live dashboard (#live) ---------- */
+.live-dashboard { display: grid; gap: 4px; }
+.live-group h3 {
+  margin: 18px 0 12px; font-family: "Manrope", sans-serif; font-size: 15px; letter-spacing: -.3px;
+  color: var(--accent-deep);
+}
+.live-stream-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+.live-stream-card {
+  display: grid; grid-template-columns: 132px 1fr; gap: 0; overflow: hidden;
+  border-radius: var(--radius); box-shadow: var(--shadow-sm);
+}
+.live-card-thumb {
+  position: relative; display: block; width: 100%; aspect-ratio: 16/9;
+  padding: 0; border: 0; background: var(--accent-soft); overflow: hidden; cursor: pointer;
+}
+.live-card-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.live-card-badge {
+  position: absolute; top: 7px; left: 7px; padding: 3px 8px;
+  border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 10px; font-weight: 800; letter-spacing: .4px; box-shadow: var(--shadow-sm);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+.live-card-badge.scheduled { background: var(--accent-strong); color: var(--on-accent); animation: none; }
+.live-card-badge.replay { background: var(--glass-strong); color: var(--text); animation: none; }
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
+.live-card-body { min-width: 0; padding: 10px 12px; display: grid; gap: 5px; align-content: start; }
+.live-card-body h3 {
+  margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  font-size: 14px; line-height: 1.3;
+}
+.live-card-body p { margin: 0; color: var(--muted); font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.live-card-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 11px; }
+.live-card-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 2px; }
+.live-card-actions .action-button { min-height: 32px; padding: 0 11px; font-size: 12px; }
+.live-processing-note { margin: 4px 0 0; color: var(--accent-deep); font-size: 11.5px; font-weight: 700; }
+.live-failed-note { margin: 4px 0 0; color: var(--danger); font-size: 11.5px; font-weight: 700; }
+
+/* "Not configured" callout on the Live page */
+.live-config-warning {
+  display: grid; gap: 6px; padding: 14px 16px; margin: 0 0 18px;
+  border-left: 4px solid var(--accent-strong); border-radius: var(--radius-sm);
+}
+.live-config-warning strong { color: var(--accent-deep); font-size: 13.5px; }
+.live-config-warning p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; word-break: break-word; }
+
+/* "Live right now" rail */
+.live-now-section { margin-top: 8px; }
+.live-rail-card .live-duration-badge {
+  background: var(--danger); color: #fff; animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+/* ---------- Watch-live page ---------- */
+.live-player-wrap { position: relative; }
+.live-watch-video { width: 100%; height: 100%; object-fit: contain; background: #1c1607; display: block; }
+.live-watch-overlay {
+  position: absolute; inset: 0; z-index: 2; display: grid; place-content: center; justify-items: center; gap: 6px;
+  padding: 18px; text-align: center; color: #fdf6dc;
+  background: radial-gradient(400px 260px at 50% 45%, rgb(28 22 7 / .82), rgb(28 22 7 / .55));
+}
+.live-watch-overlay h3 { margin: 0; font-family: "Manrope", sans-serif; font-size: clamp(14px, 3.6vw, 18px); }
+.live-watch-overlay p { margin: 0; color: rgb(253 246 220 / .8); font-size: 12.5px; }
+
+.live-owner-tools { margin-top: 15px; padding: 13px 15px; border-radius: var(--radius); display: grid; gap: 9px; justify-items: start; }
+.live-owner-tools h3 { margin: 0; font-size: 14px; }
+.live-owner-tools p { margin: 0; color: var(--muted); font-size: 12px; }
+.live-owner-tools .danger-button { min-height: 38px; }
+
+/* ---------- Live chat (studio + watch page) ---------- */
+.live-chat-section { display: grid; gap: 9px; }
+.live-chat-section h3 { margin: 2px 0 0; font-family: "Manrope", sans-serif; font-size: 14px; }
+.live-chat-standalone {
+  position: sticky; top: calc(var(--topbar-h) + 10px);
+  padding: 12px; border: 1px solid var(--glass-border); border-radius: var(--radius);
+  background: var(--glass); backdrop-filter: blur(var(--blur)); box-shadow: var(--shadow-sm);
+}
+.live-chat-list {
+  display: grid; gap: 7px; align-content: start;
+  height: min(320px, 38vh); overflow-y: auto; overscroll-behavior: contain;
+  padding: 4px 2px; -webkit-overflow-scrolling: touch;
+}
+.live-chat-item {
+  padding: 7px 10px; border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--glass-border); font-size: 12.5px; line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.live-chat-item strong { display: block; color: var(--accent-deep); font-size: 11.5px; }
+.live-chat-item p { margin: 2px 0 0; }
+.live-chat-form { display: flex; gap: 8px; }
+.live-chat-form input {
+  flex: 1; min-width: 0; height: 40px; padding: 0 13px;
+  border: 1px solid var(--glass-border); border-radius: 999px; background: var(--surface);
+  font-size: 13px;
+}
+.live-chat-form input:focus { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-wash); }
+.live-chat-form .primary-button { min-height: 40px; padding: 0 16px; border-radius: 999px; font-size: 12.5px; }
+.live-chat-signin { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+/* ---------- Host chat moderation ---------- */
+.live-mod-tools { display: flex; flex-wrap: wrap; gap: 7px; }
+.live-mod-tools .action-button { min-height: 32px; padding: 0 11px; font-size: 12px; }
+.live-participants { display: grid; gap: 6px; max-height: 150px; overflow-y: auto; overscroll-behavior: contain; }
+.live-mod-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px; border-radius: 9px;
+  background: var(--surface); border: 1px solid var(--glass-border);
+}
+.live-mod-name { flex: 1; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.live-mod-row .action-button { min-height: 27px; padding: 0 9px; font-size: 11px; flex: none; }
+.live-mod-hint { margin: 0; color: var(--quiet); font-size: 11.5px; }
+
+/* ---------- Go Live studio modal ---------- */
+.live-studio-panel { display: flex; flex-direction: column; gap: 13px; padding: 26px 19px calc(16px + env(safe-area-inset-bottom)); max-height: min(760px, calc(var(--app-vh) - 26px)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.live-studio-panel > .modal-heading { padding: 0; margin: 0; }
+.live-studio-panel > .modal-heading p { margin-bottom: 0; }
+.live-preview-wrap {
+  position: relative; width: 100%; aspect-ratio: 16/9; flex: none; overflow: hidden;
+  border-radius: var(--radius); background: #1c1607; border: 1px solid var(--glass-border); box-shadow: var(--shadow-sm);
+}
+.live-preview-video { width: 100%; height: 100%; object-fit: cover; display: block; background: #1c1607; }
+.live-preview-empty {
+  position: absolute; inset: 0; z-index: 2; display: grid; place-content: center; justify-items: center; gap: 9px;
+  padding: 16px; text-align: center; background: rgb(28 22 7 / .55); color: #fdf6dc;
+}
+.live-preview-empty span { font-size: 30px; }
+.live-preview-empty p { margin: 0; max-width: 300px; font-size: 12.5px; line-height: 1.5; }
+.live-preview-empty .primary-button { min-height: 38px; }
+.live-live-badge {
+  position: absolute; top: 10px; left: 10px; z-index: 3; padding: 4px 10px;
+  border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 11px; font-weight: 800; letter-spacing: .6px; box-shadow: var(--shadow);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+.live-controls-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.live-controls-row .action-button { flex: 1 1 auto; min-height: 40px; font-size: 12.5px; }
+.live-setup-form { display: grid; gap: 12px; }
+.live-viewer-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 13px; border-radius: var(--radius-sm);
+  background: var(--accent-wash); border: 1px solid var(--glass-border);
+  font-size: 13px; font-weight: 700; color: var(--accent-deep);
+}
+
+/* ---------- Responsive: tablet and up ---------- */
+@media (min-width: 720px) {
+  .live-stream-grid { grid-template-columns: repeat(2, 1fr); }
+  .live-card-thumb { aspect-ratio: auto; height: 100%; min-height: 96px; }
+  .live-chat-list { height: min(420px, 55vh); }
+  .live-studio-panel { padding: 30px 28px calc(20px + env(safe-area-inset-bottom)); }
+  .live-controls-row .action-button { flex: 0 1 auto; }
+}
+@media (min-width: 1080px) {
+  .live-stream-grid { grid-template-columns: repeat(3, 1fr); }
+}
 .action-button {
   flex: none; min-height: 37px; padding: 0 13px;
   border: 1px solid var(--glass-border); border-radius: 19px;

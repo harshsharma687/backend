@@ -8,9 +8,15 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 const getTarget = (req) => {
   const target = {};
   const { videoId, commentId, tweetId } = req.body;
-  if (videoId) target.video = videoId;
-  if (commentId) target.comment = commentId;
-  if (tweetId) target.tweet = tweetId;
+  // Cast string ids to ObjectId — a plain string never matches the ObjectId
+  // stored by the schema, so countDocuments silently returned 0 forever.
+  const toId = (value, field) => {
+    if (!mongoose.isValidObjectId(value)) throw new ApiError(400, `Invalid ${field} id`);
+    return new mongoose.Types.ObjectId(value);
+  };
+  if (videoId) target.video = toId(videoId, "videoId");
+  if (commentId) target.comment = toId(commentId, "commentId");
+  if (tweetId) target.tweet = toId(tweetId, "tweetId");
   if (Object.keys(target).length !== 1) {
     throw new ApiError(400, "Provide exactly one of videoId, commentId, or tweetId");
   }

@@ -39,7 +39,7 @@
         <nav class="nav-list" id="primary-nav">
           <a href="#home" class="nav-item active mobile-tab" data-route="home"><span>⌂</span><b>Home</b></a>
           <a href="#shorts" class="nav-item mobile-tab" data-route="shorts"><span>◉</span><b>Shorts</b></a>
-          <a href="#you" class="nav-item mobile-tab you-tab" data-route="you"><span><img class="you-tab-avatar" id="you-tab-avatar" alt="" /><span class="you-tab-glyph">◉</span></span><b>You</b></a>
+          <a href="#live" class="nav-item mobile-tab live-tab" data-route="live"><span class="live-nav-dot">●</span><b>Live</b></a>
           <a href="#posts" class="nav-item mobile-tab" data-route="posts"><span>❏</span><b>Posts</b></a>
           <div class="nav-divider"></div>
           <a href="#subscriptions" class="nav-item" data-route="subscriptions"><span>▣</span><b>Subscriptions</b></a>
@@ -133,7 +133,7 @@
         <div class="modal-heading"><span class="eyebrow">Creator studio</span><h2>Upload a video</h2><p>Share something worth watching with your community.</p></div>
         <div class="upload-layout">
           <div class="upload-picker-column">
-            <label class="drop-zone" id="video-drop-zone"> <span class="upload-icon">⇧</span><strong>Select a video</strong><small>MP4, WebM or MOV · up to 500 MB</small><input required name="videoFile" type="file" accept="video/*" /></label>
+            <label class="drop-zone" id="video-drop-zone"> <span class="upload-icon">⇧</span><strong>Select a video</strong><small>MP4, WebM or MOV · up to 500 MB</small><input required name="videoFile" type="file" accept="video/*,video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" capture="environment" /></label>
             <div class="file-preview" id="video-file-preview" hidden>
               <div class="file-chip"><span class="file-chip-icon">🎬</span><div class="file-chip-info"><div class="file-chip-name" id="video-file-name"></div><div class="file-chip-size" id="video-file-size"></div></div><button class="outline-button file-chip-remove" type="button" data-action="remove-video-file">Change</button></div>
               <video class="upload-video-preview" id="video-preview-player" controls playsinline muted preload="metadata"></video>
@@ -142,7 +142,7 @@
           <div class="upload-fields">
             <label>Title<input required name="title" maxlength="100" placeholder="Give your video a clear, compelling title" /></label>
             <label>Description<textarea required name="description" maxlength="5000" placeholder="Tell viewers what they can expect"></textarea></label>
-            <label class="thumbnail-field">Thumbnail <small>Required · 16:9 works best</small><input required name="thumbnail" type="file" accept="image/*" /></label>
+            <label class="thumbnail-field">Thumbnail <small>Required · 16:9 works best</small><input required name="thumbnail" type="file" accept="image/*,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" /></label>
             <img class="thumbnail-preview" id="thumbnail-preview" alt="" hidden />
             <div class="upload-progress" id="upload-progress" hidden>
               <div class="upload-progress-row"><span class="upload-progress-label">Uploading your video…</span><strong id="upload-progress-percent">0%</strong></div>
@@ -156,6 +156,44 @@
           <button class="primary-button wide" type="submit" id="upload-submit">Publish video <span>↑</span></button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="modal live-studio-modal" id="live-studio-modal">
+      <div class="modal-panel live-studio-panel">
+        <button class="modal-close" type="button" aria-label="Close" data-action="close-modal">×</button>
+        <div class="modal-heading"><span class="eyebrow">Creator studio</span><h2 id="live-studio-title">Go live</h2><p id="live-studio-subtitle">Your camera preview appears here.</p></div>
+        <div class="live-preview-wrap">
+          <video id="live-preview-video" class="live-preview-video" autoplay playsinline muted></video>
+          <div class="live-preview-empty" id="live-preview-empty"><span>📷</span><p id="live-preview-hint">Requesting camera & microphone…</p><button class="primary-button" type="button" data-action="live-retry-devices">Try again</button></div>
+          <div class="live-live-badge" id="live-onair-badge" hidden>● LIVE</div>
+        </div>
+        <div class="live-controls-row">
+          <button class="action-button" type="button" id="live-mic-toggle" data-action="live-toggle-mic">🎙 Mic on</button>
+          <button class="action-button" type="button" id="live-cam-toggle" data-action="live-toggle-cam">🎥 Camera on</button>
+          <button class="action-button" type="button" id="live-switch-cam" data-action="live-switch-camera">🔄 Switch camera</button>
+        </div>
+        <form id="live-setup-form" class="live-setup-form" autocomplete="off">
+          <label>Title<input required name="title" maxlength="140" placeholder="What are you streaming about?" /></label>
+          <label>Description<textarea name="description" maxlength="5000" placeholder="Tell viewers what to expect"></textarea></label>
+          <div class="form-row">
+            <label class="file-label">Thumbnail <small>Optional</small><input name="thumbnail" type="file" accept="image/*,.jpg,.jpeg,.png,.webp" capture="environment" /></label>
+            <label>Visibility<select name="visibility"><option value="public">Public</option><option value="unlisted">Unlisted</option></select></label>
+          </div>
+          <div class="upload-status" id="live-status" hidden></div>
+          <button class="primary-button wide" type="submit" id="live-go-button">Go live <span>●</span></button>
+          <button class="danger-button wide" type="button" id="live-end-button" data-action="live-end" hidden>End live stream</button>
+        </form>
+        <section class="live-chat-section" id="live-studio-chat" hidden>
+          <h3>Live chat</h3>
+          <div class="live-mod-tools" id="live-mod-tools">
+            <button class="action-button" type="button" id="live-chat-lock" data-action="live-mod-lock">💬 Chat open</button>
+          </div>
+          <div class="live-chat-list" id="live-chat-list"></div>
+          <form class="live-chat-form" id="live-chat-form"><input name="content" maxlength="300" placeholder="Say something…" autocomplete="off" /><button class="primary-button" type="submit">Send</button></form>
+          <div class="live-participants" id="live-participants"><p class="live-mod-hint">Viewers you can moderate appear here once they join.</p></div>
+        </section>
+        <div class="live-viewer-row" id="live-viewer-row" hidden><span id="live-viewer-count">👥 0 watching</span><span id="live-peak-count"></span></div>
+      </div>
     </dialog>
 
     <dialog class="modal small-modal" id="playlist-modal">
@@ -198,6 +236,7 @@
       </article>
     </template>
 
+    <script src="https://unpkg.com/livekit-client@2.5.7/dist/livekit-client.umd.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

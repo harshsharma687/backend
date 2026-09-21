@@ -63,6 +63,7 @@ import tweetRouter from "./routes/tweet.routes.js"
 import videoRouter from "./routes/video.routes.js"
 import subscriptionRouter from "./routes/subscription.routes.js"
 import postRouter from "./routes/post.routes.js"
+import liveRouter from "./routes/live.routes.js"
 
 // routes declaration
 app.use("/api/v1/users", userRouter)  //prefix
@@ -73,6 +74,7 @@ app.use("/api/v1/tweets", tweetRouter)
 app.use("/api/v1/videos", videoRouter)
 app.use("/api/v1/subscriptions", subscriptionRouter)
 app.use("/api/v1/posts", postRouter)
+app.use("/api/v1/live", liveRouter)
 
 app.use((error, req, res, next) => {
     if (error instanceof multer.MulterError) {
