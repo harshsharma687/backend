@@ -42,6 +42,9 @@ const state = {
   uploadVideoDuration: null,
   live: {
     previewStream: null,
+    recordingCanvas: null,
+    recordingCanvasInterval: null,
+    recordingCanvasClosed: true,
     room: null,
     dbStream: null,
     recorder: null,
@@ -1017,6 +1020,8 @@ async function openLiveStudio() {
     });
     state.live.previewStream = stream;
     preview.srcObject = stream;
+    // iOS Safari sometimes leaves the element paused after srcObject is set.
+    preview.play?.().catch(() => {});
     empty.hidden = true;
     state.live.micOn = true;
     state.live.camOn = true;
@@ -1036,6 +1041,14 @@ function stopLivePreviewOnly() {
   state.live.previewStream = null;
   const preview = $("#live-preview-video");
   if (preview) preview.srcObject = null;
+  // Restore the placeholder — otherwise the modal keeps showing a dead black
+  // box after a stream ends (users read it as "camera is broken").
+  const empty = $("#live-preview-empty");
+  if (empty) {
+    empty.hidden = false;
+    const hint = $("#live-preview-hint");
+    if (hint) hint.textContent = "Camera preview is off. Press \u201cGo live\u201d to start the camera.";
+  }
 }
 
 function updateLiveToggles() {
@@ -1157,7 +1170,37 @@ function startLiveRecording() {
       return;
     }
     const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find((type) => MediaRecorder.isTypeSupported(type)) || "";
-    const recorder = new MediaRecorder(previewStream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : {});
+    // CRITICAL: record from a lightweight canvas stream, NOT the camera stream.
+    // The camera stream is simultaneously encoded by LiveKit for the broadcast;
+    // double-encoding 720p saturates the CPU (total on phones) and MediaRecorder
+    // then produces ZERO chunks — recordings come out empty. A 640x360 15fps
+    // canvas copy costs ~2% CPU, always records, and does not affect the live
+    // broadcast (which keeps the full-resolution camera track).
+    let recordStream = previewStream;
+    try {
+      const videoTrack = previewStream.getVideoTracks()[0];
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 360;
+      const ctx = canvas.getContext("2d");
+      const previewVideo = $("#live-preview-video");
+      const draw = () => {
+        if (videoTrack.readyState !== "live" || state.live.recordingCanvasClosed) return;
+        if (!previewVideo || !previewVideo.videoWidth) return; // frame not ready yet
+        try { ctx.drawImage(previewVideo, 0, 0, canvas.width, canvas.height); } catch { /* frame not ready */ }
+      };
+      const interval = setInterval(draw, 1000 / 15); // 15 fps — plenty for a saved replay
+      state.live.recordingCanvasClosed = false;
+      state.live.recordingCanvasInterval = interval;
+      state.live.recordingCanvas = canvas;
+      // Audio is tapped directly from the camera track — unchanged.
+      const canvasStream = canvas.captureStream(15); // browser samples the canvas at 15fps automatically — requestFrame() (manual mode) would emit zero frames
+      previewStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+      recordStream = canvasStream;
+    } catch (canvasError) {
+      console.warn("Canvas recording unavailable, falling back to camera stream:", canvasError);
+    }
+    const recorder = new MediaRecorder(recordStream, mimeType ? { mimeType, videoBitsPerSecond: 1_500_000 } : {});
     state.live.chunks = [];
     recorder.ondataavailable = (event) => { if (event.data?.size) state.live.chunks.push(event.data); };
     recorder.onerror = (event) => console.error("Recorder error:", event.error);
@@ -1169,10 +1212,18 @@ function startLiveRecording() {
   }
 }
 
+function stopLiveRecordingCanvas() {
+  // The canvas feed must stop with the recording, or it burns CPU forever.
+  state.live.recordingCanvasClosed = true;
+  if (state.live.recordingCanvasInterval) { clearInterval(state.live.recordingCanvasInterval); state.live.recordingCanvasInterval = null; }
+  state.live.recordingCanvas = null;
+}
+
 async function stopLiveRecording() {
   const recorder = state.live.recorder;
   if (!recorder) return null;
   state.live.recorder = null;
+  stopLiveRecordingCanvas();
   if (recorder.state !== "inactive") {
     await new Promise((resolve) => {
       recorder.onstop = resolve;
@@ -1247,6 +1298,7 @@ function cleanupLiveSession() {
   state.live.room = null;
   state.live.dbStream = null;
   state.live.recorder = null;
+  stopLiveRecordingCanvas();
   state.live.chunks = [];
   state.live.moderation = null;
   state.live.publishedTracks = [];
@@ -2325,6 +2377,11 @@ function bindEvents() {
   const liveModal = $("#live-studio-modal");
   if (liveModal) liveModal.addEventListener("cancel", (event) => {
     if (state.live.dbStream || state.live.recorder) { event.preventDefault(); liveModal.close(); endLiveOnStudioClose(); }
+  });
+  // Releasing the camera whenever the studio closes with no active stream
+  // (backdrop tap / Esc before going live) — otherwise the camera stays on.
+  if (liveModal) liveModal.addEventListener("close", () => {
+    if (!state.live.dbStream && !state.live.recorder) stopLivePreviewOnly();
   });
 }
 
