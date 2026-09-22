@@ -179,15 +179,20 @@ async function requestOnce(path, options = {}, signal) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.success === false) {
     const isAuthCall = path.startsWith("/users/login") || path.startsWith("/users/refresh-token");
+    let deadSession = false;
     if (response.status === 401 && !isAuthCall && state.token) {
       try {
         await refreshSession();
         return await requestOnce(path, options, signal);
       } catch {
-        // refresh failed — fall through to the normal error below
+        // Refresh failed too — the stored session is definitively dead. Wipe it
+        // immediately so every later action opens login instead of failing with
+        // cryptic "Invalid access token" errors (this used to trap Go-Live).
+        clearDeadSession();
+        deadSession = true;
       }
     }
-    const error = new Error(payload.message || `Request failed (${response.status})`);
+    const error = new Error(deadSession ? "Your session expired. Please log in again." : payload.message || `Request failed (${response.status})`);
     error.status = response.status;
     throw error;
   }
@@ -259,6 +264,17 @@ function uploadWithProgress(path, { method = "POST", body, onProgress, timeoutMs
 // Access tokens expire after 1 day. When that happens the server answers 401;
 // silently exchange the refresh-token cookie for a fresh pair and retry once,
 // so people are not logged out every day.
+// A 401 + failed refresh means the stored token/cookie pair is unusable.
+// Mirrors handleLogout's local wipe without the network round-trip.
+function clearDeadSession() {
+  state.token = "";
+  state.user = null;
+  localStorage.removeItem("streamly_access_token");
+  localStorage.removeItem("streamly_user");
+  updateIdentityUI();
+  toast("Your session expired. Please log in again.", "error");
+}
+
 async function refreshSession() {
   if (!refreshingPromise) {
     refreshingPromise = request("/users/refresh-token", { method: "POST", timeoutMs: 15000 })
